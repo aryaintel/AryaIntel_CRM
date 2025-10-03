@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Global tweaks (Tailwind Preflight zaten reset yapar)
+  İstersen varsayılan yazı tipini burada belirleyebiliriz.
+*/
+@layer base {
+  html {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  }
+}
+
+/* Tema tercihine göre renk şeması ipucu (opsiyonel) */
+:root {
+  color-scheme: light dark;
+}
+
+/* Vite şablonundan kalan stilleri Tailwind ile ifade ediyoruz */
+body {
+  /* tam ekran yüksekliği + okunaklı metin renkleri */
+  @apply min-h-screen bg-neutral-900 text-neutral-100 antialiased dark:bg-neutral-900 dark:text-neutral-100;
+}
+
+/* Linkler */
+a {
+  @apply font-medium text-indigo-400 hover:text-indigo-300 underline-offset-2 hover:underline;
+}
+
+/* Başlıklar */
+h1 {
+  @apply text-4xl leading-tight font-semibold;
+}
+
+/* Butonlar */
+button {
+  @apply inline-flex items-center rounded-lg border border-transparent bg-neutral-800 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors duration-200 hover:bg-neutral-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500;
+}
+
+/* Light mode özel dokunuşları (isteğe bağlı) */
+@media (prefers-color-scheme: light) {
+  body {
+    @apply bg-white text-neutral-900;
+  }
+  a {
+    @apply text-indigo-600 hover:text-indigo-500;
+  }
+  button {
+    @apply bg-neutral-100 text-neutral-900 hover:bg-white;
+  }
+}

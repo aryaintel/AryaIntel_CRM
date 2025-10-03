@@ -1,0 +1,19 @@
+  feat/accounts-crud-ui[m
+  feat/contacts-crud-ui[m
+  feat/contacts-list-ui[m
+  feat/deals-crud-ui[m
+  feat/deals-list-ui[m
+* [32mfeat/users-crud-ui[m
+  main[m
+  [31mremotes/origin/HEAD[m -> origin/main
+  [31mremotes/origin/chore/alembic-init[m
+  [31mremotes/origin/feat/accounts-crud-ui[m
+  [31mremotes/origin/feat/auth-tenant[m
+  [31mremotes/origin/feat/contacts-crud-ui[m
+  [31mremotes/origin/feat/contacts-list-ui[m
+  [31mremotes/origin/feat/deals-crud-ui[m
+  [31mremotes/origin/feat/deals-list-ui[m
+  [31mremotes/origin/feat/frontend-shell[m
+  [31mremotes/origin/feat/users-crud-ui[m
+  [31mremotes/origin/main[m
+  [31mremotes/origin/master[m

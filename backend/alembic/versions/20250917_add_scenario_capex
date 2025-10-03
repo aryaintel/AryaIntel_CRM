@@ -1,0 +1,39 @@
+"""add scenario_capex table"""
+
+from alembic import op
+import sqlalchemy as sa
+
+# --- Revision identifiers ---
+revision = "20250917_add_scenario_capex"
+down_revision = "f5b4de822a88"  # <-- mevcut HEAD (scenario_overheads) hash'i
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "scenario_capex",
+        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column(
+            "scenario_id",
+            sa.Integer(),
+            sa.ForeignKey("scenarios.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column("year", sa.Integer(), nullable=False),
+        sa.Column("month", sa.Integer(), nullable=False),
+        sa.Column("amount", sa.Numeric(18, 2), nullable=False),
+        sa.Column("notes", sa.String(), nullable=True),
+        sa.CheckConstraint("month >= 1 AND month <= 12", name="ck_capex_month"),
+    )
+    op.create_index(
+        "ix_capex_scenario_year_month",
+        "scenario_capex",
+        ["scenario_id", "year", "month"],
+        unique=False,
+    )
+
+
+def downgrade() -> None:
+    op.drop_index("ix_capex_scenario_year_month", table_name="scenario_capex")
+    op.drop_table("scenario_capex")
