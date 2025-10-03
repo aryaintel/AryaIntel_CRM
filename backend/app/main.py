@@ -186,5 +186,5 @@ app.include_router(rise_fall_router)
 # Products & Price Books
 app.include_router(products_router)
 
-# Rebates runtime (preview endpoint used by Summary & others)
+# Rebates runtimfe (preview endpoint used by Summary & others)
 app.include_router(rebates_runtime_router)
