@@ -31,7 +31,7 @@ type ScenarioDetail = {
   start_date: string; // ISO
 };
 
-// Backend workflow contract
+// Backend workflow contract;
 type Workflow = {
   boq_ready: boolean;
   twc_ready: boolean;
