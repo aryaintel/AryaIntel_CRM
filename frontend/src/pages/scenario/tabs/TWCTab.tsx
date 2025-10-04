@@ -132,10 +132,12 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
   }
 
   async function markReady() {
-    if (!confirm("Mark TWC as ready and move to CAPEX?")) return;
+    if (!confirm("Mark TWC as ready and move to Index?")) return;
     try {
+      // Use legacy path (works under both prefixes on the BE)
       await apiPost(`/scenarios/${scenarioId}/workflow/mark-twc-ready`, {});
-      alert("Workflow moved to CAPEX.");
+
+      alert("Workflow moved to Index.");
       onMarkedReady?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Cannot mark TWC as ready.");
@@ -183,7 +185,7 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
             onClick={markReady}
             className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm hover:bg-indigo-500"
           >
-            Mark TWC Ready → CAPEX
+            Mark TWC Ready → Index
           </button>
         </div>
       </div>

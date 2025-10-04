@@ -1,22 +1,21 @@
 // frontend/src/pages/scenario/api/indexSeries.ts
-// v1.0.5 backend kontratına uyumlu ince API sarmalı
+// API wrapper aligned with backend /api/index-series routes
+
 import { apiGet, apiPost, apiPut, apiDelete } from "../../../lib/api";
 
-/* =========================
-   Types (BE-aligned)
-========================= */
+/* ========== Types (BE-aligned) ========== */
 export type IndexSeries = {
   id: number;
-  code: string;                 // ZORUNLU
-  name: string;                 // ZORUNLU
+  code: string;
+  name: string;
   unit?: string | null;
   country?: string | null;
   currency?: string | null;
   source?: string | null;
   fetch_adapter?: string | null;
-  fetch_config?: Record<string, unknown> | null;
+  fetch_config?: string | null | Record<string, unknown>;
   is_active?: boolean;
-  description?: string | null;  // varsa
+  description?: string | null;
 };
 
 export type IndexSeriesCreate = {
@@ -27,26 +26,12 @@ export type IndexSeriesCreate = {
   currency?: string | null;
   source?: string | null;
   fetch_adapter?: string | null;
-  fetch_config?: Record<string, unknown> | null;
+  fetch_config?: string | null | Record<string, unknown>;
   is_active?: boolean;
   description?: string | null;
 };
 
 export type IndexSeriesUpdate = Partial<IndexSeriesCreate>;
-
-export type IndexPoint = {
-  // BE tekil upsert & delete için "ym" (YYYY-MM) kullanır
-  ym: string;                 // "YYYY-MM"
-  value: number;
-  source_ref?: string | null;
-};
-
-export type IndexPointBulkItem = {
-  year: number;               // 1900..3000
-  month: number;              // 1..12
-  value: number;
-  source_ref?: string | null;
-};
 
 export type Paginated<T> = {
   items: T[];
@@ -55,24 +40,42 @@ export type Paginated<T> = {
   offset: number;
 };
 
-/* =========================
-   Helpers
-========================= */
+export type IndexPoint = {
+  ym: string;               // "YYYY-MM" (used by FE single-upsert/delete)
+  value: number;
+  source_ref?: string | null;
+};
+
+export type IndexPointBulkItem = {
+  year: number;
+  month: number;            // 1..12
+  value: number;
+  source_ref?: string | null;
+};
+
+/** When BE returns year/month instead of ym (list endpoints) */
+export type RawPoint = {
+  ym?: string;
+  year?: number;
+  month?: number;
+  value: number;
+  source_ref?: string | null;
+};
+
+/* ========== Helpers ========== */
 export function toYM(year: number, month: number): string {
-  const m = String(month).padStart(2, "0");
-  return `${year}-${m}`;
+  return `${year}-${String(month).padStart(2, "0")}`;
 }
-
 export function fromYM(ym: string): { year: number; month: number } {
-  const [y, m] = ym.split("-");
-  return { year: Number(y), month: Number(m) };
+  const [y, m] = ym.split("-").map(Number);
+  return { year: y, month: m };
 }
 
-/* =========================
-   API Calls
-========================= */
+/* ========== Base ========== */
+const BASE = "/api/index-series";
 
-// List series (supports filters in v1.0.5)
+/* ========== Series endpoints ========== */
+
 export async function listSeries(params?: {
   q?: string;
   source?: string;
@@ -82,74 +85,64 @@ export async function listSeries(params?: {
   limit?: number;
   offset?: number;
 }): Promise<Paginated<IndexSeries>> {
-  const query = new URLSearchParams();
+  const usp = new URLSearchParams();
   if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      if (v !== undefined && v !== null && v !== "") {
-        query.append(k, String(v));
-      }
-    }
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== "") usp.append(k, String(v));
+    });
   }
-  const qs = query.toString();
-  return apiGet(`/api/index-series${qs ? `?${qs}` : ""}`);
+  const qs = usp.toString();
+  return apiGet<Paginated<IndexSeries>>(`${BASE}${qs ? `?${qs}` : ""}`);
 }
 
-// Create / Get / Update series
 export async function createSeries(payload: IndexSeriesCreate): Promise<IndexSeries> {
-  return apiPost("/api/index-series", payload);
+  // BE returns { id }; fetch full object afterwards for the UI
+  const created = await apiPost<{ id: number }>(`${BASE}`, payload);
+  return getSeries(created.id);
 }
 
-export async function getSeries(sid: number): Promise<IndexSeries> {
-  return apiGet(`/api/index-series/${sid}`);
+export function getSeries(id: number): Promise<IndexSeries> {
+  return apiGet<IndexSeries>(`${BASE}/${id}`);
 }
 
-export async function updateSeries(sid: number, payload: IndexSeriesUpdate): Promise<IndexSeries> {
-  return apiPut(`/api/index-series/${sid}`, payload);
+export async function updateSeries(id: number, payload: IndexSeriesUpdate): Promise<IndexSeries> {
+  await apiPut(`${BASE}/${id}`, payload); // BE returns {updated:true}, we re-fetch
+  return getSeries(id);
 }
 
-// Points: list (paginated envelope)
+/* ========== Points endpoints ========== */
+
 export async function listPoints(
-  sid: number,
-  params?: { limit?: number; offset?: number }
-): Promise<Paginated<IndexPoint>> {
-  const query = new URLSearchParams();
-  if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
-  const qs = query.toString();
-  return apiGet(`/api/index-series/${sid}/points${qs ? `?${qs}` : ""}`);
+  seriesId: number,
+  params?: { limit?: number; offset?: number; date_from?: string; date_to?: string }
+): Promise<Paginated<RawPoint>> {
+  const usp = new URLSearchParams();
+  if (params?.limit != null) usp.set("limit", String(params.limit));
+  if (params?.offset != null) usp.set("offset", String(params.offset));
+  if (params?.date_from) usp.set("date_from", params.date_from); // YYYY-MM
+  if (params?.date_to) usp.set("date_to", params.date_to);       // YYYY-MM
+  const qs = usp.toString();
+  return apiGet<Paginated<RawPoint>>(`${BASE}/${seriesId}/points${qs ? `?${qs}` : ""}`);
 }
 
-// Single upsert: expects { ym, value, source_ref? }
-export async function upsertPoint(
-  sid: number,
-  point: IndexPoint
-): Promise<{ ok: true }> {
-  return apiPost(`/api/index-series/${sid}/points:upsert`, point);
+export function upsertPoint(
+  seriesId: number,
+  point: { ym: string; value: number; source_ref?: string | null }
+): Promise<{ series_id: number; ym: string; value: number }> {
+  return apiPost(`${BASE}/${seriesId}/points:upsert`, point);
 }
 
-// Bulk upsert: expects { points: [...] }
-export async function bulkUpsertPoints(
-  sid: number,
+export function bulkUpsertPoints(
+  seriesId: number,
   points: IndexPointBulkItem[]
-): Promise<{ ok: true; inserted: number; updated: number }> {
-  return apiPost(`/api/index-series/${sid}/points:bulk-upsert`, { points });
+): Promise<{ series_id: number; upserted: number }> {
+  return apiPost(`${BASE}/${seriesId}/points:bulk-upsert`, { points });
 }
 
-// Delete by ym (YYYY-MM) — apiDelete genelde 'void' döner
 export async function deletePointByYM(
-  sid: number,
+  seriesId: number,
   ym: string
 ): Promise<void> {
   const qs = `?ym=${encodeURIComponent(ym)}`;
-  await apiDelete(`/api/index-series/${sid}/points${qs}`);
+  await apiDelete(`${BASE}/${seriesId}/points${qs}`);
 }
-
-/* =========================
-   Usage Notes
-========================= */
-/*
-- createSeries: code & name zorunlu; aynı code için 409 dönebilir → FE'de yakala.
-- upsertPoint: ym formatı "YYYY-MM"; 400 olursa tarih/format kontrol et.
-- bulkUpsertPoints: {points:[{year,month,value,...}]} zarfı zorunlu.
-- listSeries/listPoints: paginasyon zarflı { items, count, limit, offset } döner.
-*/

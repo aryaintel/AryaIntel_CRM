@@ -11,7 +11,7 @@ from .api import service_pricing, boq_pricing, formulations_api, formulation_lin
 from .api.escalation import router as escalation_router
 from app.api.rise_fall_api import router as rise_fall_router  # keep absolute to match pkg layout
 from app.api.rebates_runtime import router as rebates_runtime_router
-from app.api.scenario_summary import router as scenario_summary_router  # NEW: unified Summary API
+from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
 
 # Core modules
 from .api import (
@@ -32,15 +32,15 @@ from .api import (
     scenario_overheads,
     scenario_fx,
     scenario_tax,
-    workflow,
-    index_series_api,
-    escalations_api,
+    workflow,                 # mounted under /api below
+    index_series_api,         # has its own "/api/index-series" prefix
+    escalations_api,          # check below for mount (already API-prefixed in router)
 )
 
-# NEW: Products & Price Books
+# Products & Price Books
 from .api.products_api import router as products_router
 
-# NEW: Rebates (Scenario-level CRUD)
+# Rebates (Scenario-level CRUD)
 from .api.rebates_api import router as rebates_router
 
 
@@ -62,7 +62,6 @@ DEFAULT_CORS_ORIGINS = [
 
 
 def _resolve_allowed_origins() -> list[str]:
-    # settings.CORS_ALLOW_ORIGINS virgüllü string (veya liste) olabilir
     raw = getattr(settings, "CORS_ALLOW_ORIGINS", None)
     if not raw:
         return DEFAULT_CORS_ORIGINS
@@ -70,7 +69,6 @@ def _resolve_allowed_origins() -> list[str]:
         vals = [str(x).strip().rstrip("/") for x in raw if str(x).strip()]
     else:
         vals = [s.strip().rstrip("/") for s in str(raw).split(",") if s.strip()]
-    # Güvensiz yıldız kullanımı varsa dev için güvenli listeye indir
     if len(vals) == 1 and vals[0] == "*":
         return DEFAULT_CORS_ORIGINS
     return vals or DEFAULT_CORS_ORIGINS
@@ -78,24 +76,22 @@ def _resolve_allowed_origins() -> list[str]:
 
 ALLOW_ORIGINS = _resolve_allowed_origins()
 
-# 1) CORSMiddleware — routers'tan ÖNCE
+# 1) CORSMiddleware — must be added BEFORE routers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
-    allow_credentials=True,  # cookie/session için gerekli
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2) Safety net: tüm response'larda (401/404/500 dahil) doğru CORS header'ını ZORLA
+# 2) Safety net: enforce proper CORS headers on all responses
 @app.middleware("http")
 async def ensure_cors_headers(request: Request, call_next):
     response = await call_next(request)
     origin = request.headers.get("origin")
     if origin and (origin in ALLOW_ORIGINS):
-        # Her durumda origin'i aynen yansıt (CORSMiddleware'ın * koyduğu durumları da ezer)
         response.headers["Access-Control-Allow-Origin"] = origin
-        # Credentials modunda vary by Origin önemli
         prev_vary = response.headers.get("Vary")
         response.headers["Vary"] = "Origin" if not prev_vary else (
             prev_vary if "Origin" in prev_vary.split(",") else prev_vary + ", Origin"
@@ -106,7 +102,6 @@ async def ensure_cors_headers(request: Request, call_next):
 
 @app.middleware("http")
 async def _debug_auth(request: Request, call_next):
-    # Preview ve CRUD çağrılarını birlikte yakala
     if request.url.path.startswith("/api/scenarios/") and ("/rebates" in request.url.path):
         print(
             ">>> DEBUG REBATES CALL",
@@ -135,7 +130,7 @@ def me(current: CurrentUser = Depends(get_current_user)):
     }
 
 
-# Eski frontendler için alias
+# Legacy alias for older frontends
 @app.get("/auth/me", tags=["auth"], status_code=status.HTTP_200_OK)
 def me_alias(current: CurrentUser = Depends(get_current_user)):
     return {
@@ -149,6 +144,7 @@ def me_alias(current: CurrentUser = Depends(get_current_user)):
 # ---------------------------
 # Routers
 # ---------------------------
+
 # Auth & basic CRM
 app.include_router(auth.router)
 app.include_router(accounts.router)
@@ -170,16 +166,21 @@ app.include_router(scenario_overheads.router)    # Overheads
 app.include_router(scenario_fx.router)           # FX
 app.include_router(scenario_tax.router)          # TAX
 app.include_router(rebates_router)               # REBATES (CRUD)
-app.include_router(scenario_summary_router)      # SUMMARY (BOQ + rebates overlay)  ← NEW
+app.include_router(scenario_summary_router)      # SUMMARY (BOQ + rebates overlay)
 
 # Workflow & pricing/escalation
-app.include_router(workflow.router)
+# IMPORTANT: Standardize workflow under /api to match FE (`/api/scenarios/...`)
+app.include_router(workflow.router, prefix="/api")
+
 app.include_router(service_pricing.router)       # PRICE PREVIEW (service)
 app.include_router(boq_pricing.router)           # PRICE PREVIEW (boq)
 app.include_router(formulations_api.router)      # FORMULATIONS CRUD
 app.include_router(formulation_links_api.router)
-app.include_router(index_series_api.router)
-app.include_router(escalations_api.router)       # ESCALATIONS CRUD
+
+# These routers ALREADY declare API prefixes; do NOT add another prefix here.
+app.include_router(index_series_api.router)      # exposes /api/index-series/...
+app.include_router(escalations_api.router)       # exposes /api/escalations/... (as defined in module)
+
 app.include_router(escalation_router)
 app.include_router(rise_fall_router)
 

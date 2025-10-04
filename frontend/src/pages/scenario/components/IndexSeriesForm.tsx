@@ -1,4 +1,3 @@
-// frontend/src/pages/scenario/components/IndexSeriesForm.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   createSeries,
@@ -74,7 +73,7 @@ export default function IndexSeriesForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 🔧 KEY FIX: whenever mode/value (i.e., `initial`) changes, reset the form
+  // 🔧 reset when props change
   useEffect(() => {
     setForm(initial);
   }, [initial]);

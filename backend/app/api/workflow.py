@@ -1,4 +1,3 @@
-# backend/app/api/workflow.py
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
@@ -8,7 +7,7 @@ from .deps import get_db, get_current_user
 from ..models import (
     Scenario,
     ScenarioBOQItem,
-    ScenarioOverhead,   # TWC varsayımları burada tutuluyor
+    ScenarioOverhead,   # TWC assumptions live here
     ScenarioCapex,
     ScenarioService,
 )
@@ -18,11 +17,34 @@ router = APIRouter(
     tags=["workflow"],
 )
 
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
+# -------------------------- Helpers & order --------------------------
 
-# Aşama sırası (ileri/geri uyumlu)
+# Readiness stages (Index & Escalation are ungated, so not part of flags)
+STAGES = [
+    "boq",
+    "twc",
+    # (index, escalation) are ungated – user can go anytime
+    "capex",
+    "fx",
+    "tax",
+    "services",
+    "rebates",
+    "rise_fall",
+    "summary",  # aka PL
+]
+STAGE_TO_FLAG = {
+    "boq": "boq_ready",
+    "twc": "twc_ready",
+    "capex": "capex_ready",
+    "fx": "fx_ready",
+    "tax": "tax_ready",
+    "services": "services_ready",
+    "rebates": "rebates_ready",
+    "rise_fall": "rise_fall_ready",
+    "summary": "summary_ready",
+}
+
+# legacy workflow_state → cumulative readiness
 STATE_ORDER = [
     "draft",
     "boq_ready",
@@ -67,7 +89,7 @@ def _counts(db: Session, scenario_id: int) -> Dict[str, int]:
     services_active = db.execute(
         select(func.count(ScenarioService.id)).where(
             ScenarioService.scenario_id == scenario_id,
-            ScenarioService.is_active.is_(True),
+            (ScenarioService.is_active.is_(True)) | (ScenarioService.is_active.is_(None)),
         )
     ).scalar_one() or 0
 
@@ -81,83 +103,103 @@ def _counts(db: Session, scenario_id: int) -> Dict[str, int]:
 
 def _coalesce_bool(obj: Scenario, name: str, default: bool = False) -> bool:
     try:
-        return bool(getattr(obj, name))
+        v = getattr(obj, name)
+        return bool(v) if v is not None else default
     except Exception:
         return default
 
 
 def _try_set_flag(obj: Scenario, name: str, value: bool) -> None:
-    """Modelde alan yoksa sessizce geç (eski şema ihtimali)."""
+    """Set attribute if present (old schemas may miss columns)."""
     try:
         setattr(obj, name, value)
     except Exception:
         pass
 
 
-def _derive_flags_from_state(state: str) -> Dict[str, bool]:
-    """State değerinden kümülatif bayrakları türetir (geriye dönük uyum)."""
+def _derive_from_state(state: str) -> Dict[str, bool]:
+    """Backward compatible derivation from legacy workflow_state."""
     s = state or "draft"
     idx = STATE_IDX.get(s, 0)
     return {
-        "is_boq_ready": idx >= STATE_IDX["twc_ready"],
-        "is_twc_ready": idx >= STATE_IDX["capex_ready"],
-        "is_capex_ready": idx >= STATE_IDX["fx_ready"],
-        "is_fx_ready": idx >= STATE_IDX["tax_ready"],
-        "is_tax_ready": idx >= STATE_IDX["services_ready"],
-        "is_services_ready": idx >= STATE_IDX["ready"],
+        "boq_ready": idx >= STATE_IDX["twc_ready"],
+        "twc_ready": idx >= STATE_IDX["capex_ready"],
+        "capex_ready": idx >= STATE_IDX["fx_ready"],
+        "fx_ready": idx >= STATE_IDX["tax_ready"],
+        "tax_ready": idx >= STATE_IDX["services_ready"],
+        "services_ready": idx >= STATE_IDX["ready"],
+        # not tracked in legacy:
+        "rebates_ready": False,
+        "rise_fall_ready": False,
+        "summary_ready": idx >= STATE_IDX["ready"],
     }
 
 
-def _status_payload(sc: Scenario, c: Dict[str, int]) -> Dict[str, Any]:
-    workflow_state = getattr(sc, "workflow_state", "draft") or "draft"
-    derived = _derive_flags_from_state(workflow_state)
+def _flags_from_model(sc: Scenario) -> Dict[str, bool]:
+    state = getattr(sc, "workflow_state", "draft") or "draft"
+    derived = _derive_from_state(state)
+    flags = {
+        "boq_ready":       _coalesce_bool(sc, "is_boq_ready",       derived["boq_ready"]),
+        "twc_ready":       _coalesce_bool(sc, "is_twc_ready",       derived["twc_ready"]),
+        "capex_ready":     _coalesce_bool(sc, "is_capex_ready",     derived["capex_ready"]),
+        "fx_ready":        _coalesce_bool(sc, "is_fx_ready",        derived["fx_ready"]),
+        "tax_ready":       _coalesce_bool(sc, "is_tax_ready",       derived["tax_ready"]),
+        "services_ready":  _coalesce_bool(sc, "is_services_ready",  derived["services_ready"]),
+        "rebates_ready":   _coalesce_bool(sc, "is_rebates_ready",   derived["rebates_ready"]),
+        "rise_fall_ready": _coalesce_bool(sc, "is_rise_fall_ready", derived["rise_fall_ready"]),
+        "summary_ready":   _coalesce_bool(sc, "is_summary_ready",   derived["summary_ready"]),
+    }
+    return flags
 
-    is_boq_ready      = _coalesce_bool(sc, "is_boq_ready")      or derived["is_boq_ready"]
-    is_twc_ready      = _coalesce_bool(sc, "is_twc_ready")      or derived["is_twc_ready"]
-    is_capex_ready    = _coalesce_bool(sc, "is_capex_ready")    or derived["is_capex_ready"]
-    is_fx_ready       = _coalesce_bool(sc, "is_fx_ready")       or derived["is_fx_ready"]
-    is_tax_ready      = _coalesce_bool(sc, "is_tax_ready")      or derived["is_tax_ready"]
-    is_services_ready = _coalesce_bool(sc, "is_services_ready") or derived["is_services_ready"]
 
-    # Sıraya göre bir sonraki adım
-    if not is_boq_ready:
-        next_step = "boq"
-    elif not is_twc_ready:
-        next_step = "twc"
-    elif not is_capex_ready:
-        next_step = "capex"
-    elif not is_fx_ready:
-        next_step = "fx"
-    elif not is_tax_ready:
-        next_step = "tax"
-    elif not is_services_ready:
-        next_step = "services"
-    else:
-        next_step = "ready"
+def _status_payload(sc: Scenario, flags: Dict[str, bool]) -> Dict[str, Any]:
+    # first incomplete stage → current_stage
+    current = None
+    for stage in STAGES:
+        if not flags[STAGE_TO_FLAG[stage]]:
+            current = stage
+            break
+    if not current:
+        current = "summary"
+
+    i = STAGES.index(current)
+    next_stage = STAGES[i + 1] if i + 1 < len(STAGES) else None
 
     return {
-        "scenario_id": sc.id,
-        "state": workflow_state,
-        "flags": {
-            "is_boq_ready": is_boq_ready,
-            "is_twc_ready": is_twc_ready,
-            "is_capex_ready": is_capex_ready,
-            "is_fx_ready": is_fx_ready,
-            "is_tax_ready": is_tax_ready,
-            "is_services_ready": is_services_ready,
-        },
-        "counts": c,
-        "next_step": next_step,
+        **flags,
+        "current_stage": current,
+        "next_stage": next_stage,
     }
 
 
 def _require(condition: bool, message: str) -> None:
     if not condition:
-        raise HTTPException(status_code=400, detail=message)
+        raise HTTPException(status_code=422, detail=message)
 
-# -------------------------------------------------------------------
-# GET /workflow  → durum
-# -------------------------------------------------------------------
+
+def _persist_stage(db: Session, sc: Scenario, stage: str) -> Dict[str, bool]:
+    """Mark stage as ready; sync legacy workflow_state best-effort."""
+    flag_name = f"is_{STAGE_TO_FLAG[stage]}"
+    _try_set_flag(sc, flag_name, True)
+
+    ws_map = {
+        "twc": "twc_ready",
+        "capex": "capex_ready",
+        "fx": "fx_ready",
+        "tax": "tax_ready",
+        "services": "services_ready",
+        "summary": "ready",
+    }
+    if stage in ws_map:
+        sc.workflow_state = ws_map[stage]
+
+    db.add(sc)
+    db.commit()
+    db.refresh(sc)
+    return _flags_from_model(sc)
+
+# -------------------------- Routes --------------------------
+
 @router.get(
     "/{scenario_id}/workflow",
     summary="Get workflow status of a scenario",
@@ -168,12 +210,10 @@ def get_workflow_status(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
-    cnt = _counts(db, scenario_id)
-    return _status_payload(sc, cnt)
+    flags = _flags_from_model(sc)
+    return _status_payload(sc, flags)
 
-# -------------------------------------------------------------------
-# POST /workflow/mark-twc-ready (BOQ → TWC)
-# -------------------------------------------------------------------
+
 @router.post(
     "/{scenario_id}/workflow/mark-twc-ready",
     status_code=status.HTTP_200_OK,
@@ -185,20 +225,16 @@ def mark_twc_ready(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
-    cnt = _counts(db, scenario_id)
+    flags = _flags_from_model(sc)
 
-    _require(_coalesce_bool(sc, "is_boq_ready", False), "BOQ must be marked ready first.")
+    _require(flags["boq_ready"], "BOQ must be marked ready first.")
+    cnt = _counts(db, scenario_id)
     _require(cnt["boq_active"] > 0, "At least one active BOQ item is required.")
 
-    _try_set_flag(sc, "is_twc_ready", True)
-    sc.workflow_state = "twc_ready"
-    db.add(sc); db.commit(); db.refresh(sc)
+    flags = _persist_stage(db, sc, "twc")
+    return _status_payload(sc, flags)
 
-    return _status_payload(sc, _counts(db, scenario_id))
 
-# -------------------------------------------------------------------
-# POST /workflow/mark-capex-ready (TWC → CAPEX)
-# -------------------------------------------------------------------
 @router.post(
     "/{scenario_id}/workflow/mark-capex-ready",
     status_code=status.HTTP_200_OK,
@@ -210,20 +246,16 @@ def mark_capex_ready(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
-    cnt = _counts(db, scenario_id)
+    flags = _flags_from_model(sc)
 
-    _require(_coalesce_bool(sc, "is_twc_ready", False), "TWC must be marked ready first.")
+    _require(flags["twc_ready"], "TWC must be marked ready first.")
+    cnt = _counts(db, scenario_id)
     _require(cnt["capex_active"] > 0, "At least one CAPEX item is required.")
 
-    _try_set_flag(sc, "is_capex_ready", True)
-    sc.workflow_state = "capex_ready"
-    db.add(sc); db.commit(); db.refresh(sc)
+    flags = _persist_stage(db, sc, "capex")
+    return _status_payload(sc, flags)
 
-    return _status_payload(sc, _counts(db, scenario_id))
 
-# -------------------------------------------------------------------
-# POST /workflow/mark-fx-ready (CAPEX → FX)
-# -------------------------------------------------------------------
 @router.post(
     "/{scenario_id}/workflow/mark-fx-ready",
     status_code=status.HTTP_200_OK,
@@ -235,18 +267,13 @@ def mark_fx_ready(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["capex_ready"], "CAPEX must be marked ready first.")
 
-    _require(_coalesce_bool(sc, "is_capex_ready", False), "CAPEX must be marked ready first.")
+    flags = _persist_stage(db, sc, "fx")
+    return _status_payload(sc, flags)
 
-    _try_set_flag(sc, "is_fx_ready", True)        # kolon varsa işaretle
-    sc.workflow_state = "fx_ready"
-    db.add(sc); db.commit(); db.refresh(sc)
 
-    return _status_payload(sc, _counts(db, scenario_id))
-
-# -------------------------------------------------------------------
-# POST /workflow/mark-tax-ready (FX → TAX)
-# -------------------------------------------------------------------
 @router.post(
     "/{scenario_id}/workflow/mark-tax-ready",
     status_code=status.HTTP_200_OK,
@@ -258,23 +285,17 @@ def mark_tax_ready(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["fx_ready"], "FX must be marked ready first.")
 
-    state = getattr(sc, "workflow_state", "draft") or "draft"
-    _require(STATE_IDX.get(state, 0) >= STATE_IDX["fx_ready"], "FX must be marked ready first.")
+    flags = _persist_stage(db, sc, "tax")
+    return _status_payload(sc, flags)
 
-    _try_set_flag(sc, "is_tax_ready", True)       # kolon varsa işaretle
-    sc.workflow_state = "tax_ready"
-    db.add(sc); db.commit(); db.refresh(sc)
 
-    return _status_payload(sc, _counts(db, scenario_id))
-
-# -------------------------------------------------------------------
-# POST /workflow/mark-services-ready (TAX → SERVICES → READY)
-# -------------------------------------------------------------------
 @router.post(
     "/{scenario_id}/workflow/mark-services-ready",
     status_code=status.HTTP_200_OK,
-    summary="Mark SERVICES as ready (requires TAX ready & at least one active service) and move to READY",
+    summary="Mark SERVICES as ready (requires TAX ready & at least one active service) and move forward",
 )
 def mark_services_ready(
     scenario_id: int = Path(..., ge=1),
@@ -282,21 +303,79 @@ def mark_services_ready(
     _user = Depends(get_current_user),
 ):
     sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["tax_ready"], "TAX must be marked ready first.")
     cnt = _counts(db, scenario_id)
-
-    state = getattr(sc, "workflow_state", "draft") or "draft"
-    _require(STATE_IDX.get(state, 0) >= STATE_IDX["tax_ready"], "TAX must be marked ready first.")
     _require(cnt["services_active"] > 0, "At least one active service item is required.")
 
-    _try_set_flag(sc, "is_services_ready", True)
-    sc.workflow_state = "ready"
+    flags = _persist_stage(db, sc, "services")
+    return _status_payload(sc, flags)
+
+
+@router.post(
+    "/{scenario_id}/workflow/mark-rebates-ready",
+    status_code=status.HTTP_200_OK,
+    summary="Mark REBATES as ready (requires BOQ ready).",
+)
+def mark_rebates_ready(
+    scenario_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _user = Depends(get_current_user),
+):
+    sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["boq_ready"], "BOQ must be marked ready first.")
+
+    _try_set_flag(sc, "is_rebates_ready", True)
     db.add(sc); db.commit(); db.refresh(sc)
 
-    return _status_payload(sc, _counts(db, scenario_id))
+    flags = _flags_from_model(sc)
+    return _status_payload(sc, flags)
 
-# -------------------------------------------------------------------
-# POST /workflow/reset  → draft
-# -------------------------------------------------------------------
+
+@router.post(
+    "/{scenario_id}/workflow/mark-rise-fall-ready",
+    status_code=status.HTTP_200_OK,
+    summary="Mark RISE & FALL as ready (requires BOQ ready).",
+)
+def mark_rise_fall_ready(
+    scenario_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _user = Depends(get_current_user),
+):
+    sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["boq_ready"], "BOQ must be marked ready first.")
+
+    _try_set_flag(sc, "is_rise_fall_ready", True)
+    db.add(sc); db.commit(); db.refresh(sc)
+
+    flags = _flags_from_model(sc)
+    return _status_payload(sc, flags)
+
+
+@router.post(
+    "/{scenario_id}/workflow/mark-summary-ready",
+    status_code=status.HTTP_200_OK,
+    summary="Mark SUMMARY (PL) as ready (requires SERVICES ready).",
+)
+def mark_summary_ready(
+    scenario_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _user = Depends(get_current_user),
+):
+    sc = _get_scenario(db, scenario_id)
+    flags = _flags_from_model(sc)
+    _require(flags["services_ready"], "SERVICES must be marked ready first.")
+
+    _try_set_flag(sc, "is_summary_ready", True)
+    sc.workflow_state = "ready"   # legacy compatibility
+    db.add(sc); db.commit(); db.refresh(sc)
+
+    flags = _flags_from_model(sc)
+    return _status_payload(sc, flags)
+
+
 @router.post(
     "/{scenario_id}/workflow/reset",
     status_code=status.HTTP_200_OK,
@@ -309,10 +388,15 @@ def reset_workflow(
 ):
     sc = _get_scenario(db, scenario_id)
 
-    for flag in ("is_boq_ready", "is_twc_ready", "is_capex_ready", "is_fx_ready", "is_tax_ready", "is_services_ready"):
-        _try_set_flag(sc, flag, False)
-    sc.workflow_state = "draft"
+    for name in (
+        "is_boq_ready", "is_twc_ready", "is_capex_ready", "is_fx_ready",
+        "is_tax_ready", "is_services_ready", "is_rebates_ready",
+        "is_rise_fall_ready", "is_summary_ready"
+    ):
+        _try_set_flag(sc, name, False)
 
+    sc.workflow_state = "draft"
     db.add(sc); db.commit(); db.refresh(sc)
 
-    return _status_payload(sc, _counts(db, scenario_id))
+    flags = _flags_from_model(sc)
+    return _status_payload(sc, flags)

@@ -30,31 +30,43 @@ type ScenarioDetail = {
   start_date: string; // ISO
 };
 
+// Backend workflow contract
 type Workflow = {
-  scenario_id: number;
-  workflow_state?:
-    | "draft"
-    | "boq_ready"
-    | "twc_ready"
-    | "capex_ready"
-    | "fx_ready"
-    | "tax_ready"
-    | "services_ready"
-    | "ready"
-    | string;
-
-  is_boq_ready?: boolean;
-  is_twc_ready?: boolean;
-  is_capex_ready?: boolean;
-  is_fx_ready?: boolean;
-  is_tax_ready?: boolean;
-  is_services_ready?: boolean;
+  boq_ready: boolean;
+  twc_ready: boolean;
+  capex_ready: boolean;
+  fx_ready: boolean;
+  tax_ready: boolean;
+  services_ready: boolean;
+  rebates_ready: boolean;
+  rise_fall_ready: boolean;
+  summary_ready: boolean;
+  current_stage:
+    | "boq"
+    | "twc"
+    | "capex"
+    | "fx"
+    | "tax"
+    | "services"
+    | "rebates"
+    | "rise_fall"
+    | "summary";
+  next_stage:
+    | "twc"
+    | "capex"
+    | "fx"
+    | "tax"
+    | "services"
+    | "rebates"
+    | "rise_fall"
+    | "summary"
+    | null;
 };
 
 // Tabs (Escalation, Index, Rise&Fall & Rebates are ungated)
 type Tab =
-  | "pl" // kept for backward-compat — maps to Summary
-  | "summary" // preferred name going forward
+  | "pl"
+  | "summary"
   | "boq"
   | "twc"
   | "index"
@@ -77,9 +89,6 @@ function fmtDateISO(d: string) {
     return d;
   }
 }
-function isState(ws: string, key: string) {
-  return ws === key || ws === `${key}_ready`;
-}
 function tabBtnClass(active: boolean, disabled?: boolean) {
   return cls(
     "px-3 py-1 rounded border text-sm transition-colors focus:outline-none",
@@ -89,8 +98,6 @@ function tabBtnClass(active: boolean, disabled?: boolean) {
     (!active && disabled) && "opacity-50 cursor-not-allowed"
   );
 }
-
-// küçük timeout sarmalayıcı
 const withTimeout = <T,>(p: Promise<T>, ms = 8000): Promise<T> =>
   new Promise((res, rej) => {
     const t = setTimeout(() => rej(new Error(`Request timed out in ${ms}ms`)), ms);
@@ -109,7 +116,6 @@ export default function ScenarioPage() {
   const location = useLocation();
   const [sp, setSp] = useSearchParams();
 
-  // Route’tan ID’yi sağlam al (farklı param isimleri destekli)
   const id = useMemo<number | null>(() => {
     const raw =
       params.scenarioId ??
@@ -120,11 +126,11 @@ export default function ScenarioPage() {
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [params, location.pathname]);
 
-  // URL param tab (default: boq). Hatalıysa güvenli default’a düş.
   const tab: Tab = useMemo(() => {
     const t = (sp.get("tab") || "boq").toLowerCase();
     const allowed = new Set<Tab>([
-      "pl","summary","boq","twc","index","escalation","rebates","risefall","capex","fx","tax","services"
+      "pl", "summary", "boq", "twc", "index", "escalation",
+      "rebates", "risefall", "capex", "fx", "tax", "services",
     ]);
     return (allowed.has(t as Tab) ? (t as Tab) : "boq");
   }, [sp]);
@@ -138,40 +144,6 @@ export default function ScenarioPage() {
       },
       { replace: true }
     );
-  }
-
-  // Escalation, Index, Rise&Fall ve Rebates her zaman erişilebilir; diğerleri workflow-guarded
-  function setTabSafe(next: Tab) {
-    if (!flow) {
-      setTabRaw(next === "pl" ? "summary" : next);
-      return;
-    }
-    if (next === "twc" && !flow.is_boq_ready) {
-      alert("First mark 'Ready' in 1. BOQ.");
-      return;
-    }
-    if (next === "capex" && !flow.is_twc_ready) {
-      alert("First mark 'Ready' in 2. TWC.");
-      return;
-    }
-    if (next === "fx" && !flow.is_capex_ready) {
-      alert("First mark 'Ready' in 5. CAPEX.");
-      return;
-    }
-    if (next === "tax" && !flow.is_fx_ready) {
-      alert("First mark 'Ready' in 6. FX.");
-      return;
-    }
-    if (next === "services" && !flow.is_tax_ready) {
-      alert("First mark 'Ready' in 7. TAX.");
-      return;
-    }
-    // Summary (was: P&L) remains gated by services readiness
-    if ((next === "pl" || next === "summary") && !flow.is_services_ready) {
-      alert("First mark 'Ready' in 8. SERVICES.");
-      return;
-    }
-    setTabRaw(next === "pl" ? "summary" : next);
   }
 
   const [data, setData] = useState<ScenarioDetail | null>(null);
@@ -208,8 +180,7 @@ export default function ScenarioPage() {
       if (wfRes.status === "fulfilled") {
         setFlow(wfRes.value);
       } else {
-        // workflow gelmezse sayfa yine de çalışsın
-        setFlow({ scenario_id: id, workflow_state: "draft" });
+        setFlow(null);
         console.warn("Workflow load failed:", (wfRes as any).reason);
       }
     } finally {
@@ -231,15 +202,73 @@ export default function ScenarioPage() {
     [data]
   );
 
-  const canGoTWC = !!flow?.is_boq_ready;
-  const canGoCAPEX = !!flow?.is_twc_ready;
-  const canGoFX = !!flow?.is_capex_ready;
-  const canGoTAX = !!flow?.is_fx_ready;
-  const canGoSERVICES = !!flow?.is_tax_ready;
-  const canGoSUMMARY = !!flow?.is_services_ready; // replaces canGoPL
+  const boqReady = !!flow?.boq_ready;
+  const twcReady = !!flow?.twc_ready;
+  const capexReady = !!flow?.capex_ready;
+  const fxReady = !!flow?.fx_ready;
+  const taxReady = !!flow?.tax_ready;
+  const servicesReady = !!flow?.services_ready;
 
-  const ws = (flow?.workflow_state ?? "draft").toString();
-  const stateSafe = ws === "ready" ? "READY" : ws.replace("_ready", "").toUpperCase();
+  const canGoTWC = boqReady;
+  const canGoCAPEX = twcReady;
+  const canGoFX = capexReady;
+  const canGoTAX = fxReady;
+  const canGoSERVICES = taxReady;
+  const canGoSUMMARY = servicesReady;
+
+  function setTabSafe(next: Tab) {
+    // Ungated areas
+    if (next === "index" || next === "escalation" || next === "rebates" || next === "risefall") {
+      setTabRaw(next);
+      return;
+    }
+    if (!flow) {
+      setTabRaw(next === "pl" ? "summary" : next);
+      return;
+    }
+    if (next === "twc" && !boqReady) {
+      alert("First mark 'Ready' in 1. BOQ.");
+      return;
+    }
+    if (next === "capex" && !twcReady) {
+      alert("First mark 'Ready' in 2. TWC.");
+      return;
+    }
+    if (next === "fx" && !capexReady) {
+      alert("First mark 'Ready' in 5. CAPEX.");
+      return;
+    }
+    if (next === "tax" && !fxReady) {
+      alert("First mark 'Ready' in 6. FX.");
+      return;
+    }
+    if (next === "services" && !taxReady) {
+      alert("First mark 'Ready' in 7. TAX.");
+      return;
+    }
+    if ((next === "pl" || next === "summary") && !servicesReady) {
+      alert("First mark 'Ready' in 8. SERVICES.");
+      return;
+    }
+    setTabRaw(next === "pl" ? "summary" : next);
+  }
+
+  const stateBadge = useMemo(() => {
+    if (!flow) return { text: "DRAFT", cls: "bg-gray-100 text-gray-700" };
+    if (flow.summary_ready) return { text: "READY", cls: "bg-emerald-100 text-emerald-700" };
+    const map: Record<Workflow["current_stage"], { text: string; cls: string }> = {
+      boq: { text: "BOQ", cls: "bg-gray-100 text-gray-700" },
+      twc: { text: "TWC", cls: "bg-amber-100 text-amber-700" },
+      capex: { text: "CAPEX", cls: "bg-sky-100 text-sky-700" },
+      fx: { text: "FX", cls: "bg-indigo-100 text-indigo-700" },
+      tax: { text: "TAX", cls: "bg-rose-100 text-rose-700" },
+      services: { text: "SERVICES", cls: "bg-purple-100 text-purple-700" },
+      rebates: { text: "REBATES", cls: "bg-teal-100 text-teal-700" },
+      rise_fall: { text: "RISE & FALL", cls: "bg-lime-100 text-lime-700" },
+      summary: { text: "SUMMARY", cls: "bg-emerald-100 text-emerald-700" },
+    };
+    return map[flow.current_stage] ?? { text: "DRAFT", cls: "bg-gray-100 text-gray-700" };
+  }, [flow]);
 
   return (
     <div className="space-y-4">
@@ -260,19 +289,20 @@ export default function ScenarioPage() {
           )}
           {flow && (
             <span
-              className={cls(
-                "px-2 py-1 rounded font-medium",
-                ws === "draft" && "bg-gray-100 text-gray-700",
-                isState(ws, "twc") && "bg-amber-100 text-amber-700",
-                isState(ws, "capex") && "bg-sky-100 text-sky-700",
-                isState(ws, "fx") && "bg-indigo-100 text-indigo-700",
-                isState(ws, "tax") && "bg-rose-100 text-rose-700",
-                flow.is_tax_ready && !flow.is_services_ready && "bg-purple-100 text-purple-700",
-                ws === "ready" && "bg-emerald-100 text-emerald-700"
-              )}
-              title={`BOQ:${flow.is_boq_ready ? "✓" : "•"}  TWC:${flow.is_twc_ready ? "✓" : "•"}  CAPEX:${flow.is_capex_ready ? "✓" : "•"}  FX:${flow.is_fx_ready ? "✓" : "•"}  TAX:${flow.is_tax_ready ? "✓" : "•"}  SERVICES:${flow.is_services_ready ? "✓" : "•"}`}
+              className={cls("px-2 py-1 rounded font-medium", stateBadge.cls)}
+              title={
+                `BOQ:${boqReady ? "✓" : "•"}  ` +
+                `TWC:${twcReady ? "✓" : "•"}  ` +
+                `CAPEX:${capexReady ? "✓" : "•"}  ` +
+                `FX:${fxReady ? "✓" : "•"}  ` +
+                `TAX:${taxReady ? "✓" : "•"}  ` +
+                `SERVICES:${servicesReady ? "✓" : "•"}  ` +
+                `REBATES:${flow.rebates_ready ? "✓" : "•"}  ` +
+                `RISE&FALL:${flow.rise_fall_ready ? "✓" : "•"}`
+              }
             >
-              State: {stateSafe}
+              State: {stateBadge.text}
+              {flow.next_stage ? ` → Next: ${flow.next_stage.toUpperCase().replace("_", " & ")}` : ""}
             </span>
           )}
           <button onClick={loadAll} className="ml-3 px-3 py-1 rounded bg-gray-100 hover:bg-gray-200">
@@ -281,15 +311,9 @@ export default function ScenarioPage() {
         </div>
       </div>
 
-      {/* Tabs — order:
-          1. BOQ, 2. TWC, 3. Index, 4. Escalation, (ungated) Rebates & Rise & Fall,
-          5. CAPEX, 6. FX, 7. TAX, 8. SERVICES, 9. Summary */}
+      {/* Tabs */}
       <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={() => setTabSafe("boq")}
-          className={tabBtnClass(tab === "boq")}
-          title="BOQ (Input)"
-        >
+        <button onClick={() => setTabSafe("boq")} className={tabBtnClass(tab === "boq")} title="BOQ (Input)">
           1. BOQ
         </button>
 
@@ -302,7 +326,6 @@ export default function ScenarioPage() {
           2. TWC
         </button>
 
-        {/* NEW: Index (ungated) */}
         <button
           onClick={() => setTabRaw("index")}
           className={tabBtnClass(tab === "index")}
@@ -311,7 +334,6 @@ export default function ScenarioPage() {
           3. Index
         </button>
 
-        {/* NEW: Escalation (ungated) */}
         <button
           onClick={() => setTabRaw("escalation")}
           className={tabBtnClass(tab === "escalation")}
@@ -320,7 +342,6 @@ export default function ScenarioPage() {
           4. Escalation
         </button>
 
-        {/* NEW: Rebates (ungated) */}
         <button
           onClick={() => setTabRaw("rebates")}
           className={tabBtnClass(tab === "rebates")}
@@ -329,7 +350,6 @@ export default function ScenarioPage() {
           Rebates
         </button>
 
-        {/* NEW: Rise & Fall (ungated) */}
         <button
           onClick={() => setTabRaw("risefall")}
           className={tabBtnClass(tab === "risefall")}
@@ -374,7 +394,6 @@ export default function ScenarioPage() {
           8. SERVICES
         </button>
 
-        {/* Summary (replaces P&L) */}
         <button
           onClick={() => setTabSafe("summary")}
           disabled={!canGoSUMMARY}
@@ -392,7 +411,6 @@ export default function ScenarioPage() {
         </div>
       )}
 
-      {/* flow gelmese de data geldiyse render et */}
       {!loading && data && id && (
         <div className="space-y-4">
           {tab === "boq" && (
@@ -414,14 +432,26 @@ export default function ScenarioPage() {
                 scenarioId={id}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("capex");
+                  // follow left-to-right → go to Index next
+                  setTabRaw("index");
                 }}
               />
             </div>
           )}
 
           {tab === "index" && (
-            <div className="rounded border p-4 bg-white">
+            <div className="rounded border p-4 bg-white space-y-3">
+              {/* header with Mark Ready (navigate) */}
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-gray-700 font-medium">Index Series</div>
+                <button
+                  className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                  title="Mark Ready and go to 4. Escalation"
+                  onClick={() => setTabRaw("escalation")}
+                >
+                  Mark Ready → Escalation
+                </button>
+              </div>
               <IndexSeriesTab />
             </div>
           )}
@@ -461,7 +491,7 @@ export default function ScenarioPage() {
             <div className="rounded border p-4 bg-white">
               <FxTab
                 scenarioId={id}
-                isReady={!!flow?.is_fx_ready}
+                isReady={!!flow?.fx_ready}
                 onMarkedReady={async () => {
                   await loadAll();
                   setTabRaw("tax");
@@ -474,7 +504,7 @@ export default function ScenarioPage() {
             <div className="rounded border p-4 bg-white">
               <TaxTab
                 scenarioId={id}
-                isReady={!!flow?.is_tax_ready}
+                isReady={!!flow?.tax_ready}
                 onMarkedReady={async () => {
                   await loadAll();
                   setTabRaw("services");
@@ -487,7 +517,7 @@ export default function ScenarioPage() {
             <div className="rounded border p-4 bg-white">
               <ServicesTable
                 scenarioId={id}
-                isReady={!!flow?.is_services_ready}
+                isReady={!!flow?.services_ready}
                 onMarkedReady={async () => {
                   await loadAll();
                   setTabRaw("summary");
@@ -498,12 +528,7 @@ export default function ScenarioPage() {
 
           {(tab === "summary" || tab === "pl") && (
             <div className="rounded border p-4 bg-white">
-              {/* UPDATED: pass startDate & months into SummaryTab */}
-              <SummaryTab
-                scenarioId={id}
-                startDate={data.start_date}
-                months={data.months}
-              />
+              <SummaryTab scenarioId={id} startDate={data.start_date} months={data.months} />
             </div>
           )}
         </div>

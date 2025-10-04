@@ -232,7 +232,7 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
   if (!confirm("Mark CAPEX as ready and move to READY (P&L)?")) return;
 
   const attempts: Array<() => Promise<any>> = [
-    // Doğru rota (Swagger’da gördüğümüz)
+    // Doğru rota (Swagger’da gördügit rev-parse --show-toplevelğümüz)
     () => apiPost(`${apiBase}/workflow/mark-capex-ready`, {}),
     // Bazı backend sürümlerinde PUT olabilir
     () => apiPut(`${apiBase}/workflow/mark-capex-ready`, {}),

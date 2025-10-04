@@ -1,4 +1,3 @@
-// frontend/src/pages/scenario/components/IndexPointsTable.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   listPoints,
