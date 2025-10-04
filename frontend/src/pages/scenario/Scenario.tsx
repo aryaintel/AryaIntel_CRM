@@ -31,7 +31,7 @@ type ScenarioDetail = {
   start_date: string; // ISO
 };
 
-// Backend workflow contract;
+// Backend workflow contract
 type Workflow = {
   boq_ready: boolean;
   twc_ready: boolean;
@@ -462,7 +462,7 @@ export default function ScenarioPage() {
               <EscalationTab
                 scenarioId={id}
                 onMarkedReady={async () => {
-                  // No server state to toggle for escalation; just navigate
+                  // Escalation has no server 'ready' flag; just navigate
                   setTabRaw("rebates");
                 }}
               />
@@ -471,13 +471,19 @@ export default function ScenarioPage() {
 
           {tab === "rebates" && (
             <div className="rounded border p-4 bg-white">
-              <RebatesTab scenarioId={id} />
+              <RebatesTab
+                scenarioId={id}
+                onMarkedReady={() => setTabRaw("risefall")}
+              />
             </div>
           )}
 
-          {tab === "risefall" && (
+         {tab === "risefall" && (
             <div className="rounded border p-4 bg-white">
-              <RiseAndFallTab scenarioId={id} />
+              <RiseAndFallTab
+                scenarioId={id}
+                onMarkedReady={() => setTabRaw("capex")}
+    />
             </div>
           )}
 

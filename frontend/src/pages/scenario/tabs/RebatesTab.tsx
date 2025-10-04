@@ -1,5 +1,5 @@
 // [BEGIN FILE] frontend/src/pages/scenario/tabs/RebatesTab.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 
 /**
  * RebatesTab
@@ -228,7 +228,6 @@ function getBearerToken(): string | undefined {
       "jwt",
       "bearer",
       "id_token",
-      // not: app’te kullanılan "aryaintel_token" deep scan’de yakalanıyor (aşağıda)
     ];
     for (const st of stores) {
       for (const key of fastKeys) {
@@ -258,7 +257,7 @@ function getBearerToken(): string | undefined {
       }
     }
 
-    // 4) Cookie — HTTPOnly değilse (örn. 'access_token=...') yakala
+    // 4) Cookie — HTTPOnly değilse
     const cookies = document.cookie?.split(";").map((s) => s.trim()) || [];
     const cookieCandidates = ["Authorization", "access_token", "token", "jwt", "bearer", "id_token"];
     for (const c of cookies) {
@@ -314,7 +313,6 @@ async function api<T>(path: string, init?: RequestInitEx): Promise<T> {
     if (bearer) headers["Authorization"] = bearer;
   }
 
-  // headers must be applied last so Authorization is preserved
   const res = await fetch(url.toString(), {
     ...init,
     credentials: "include",
@@ -338,11 +336,9 @@ async function api<T>(path: string, init?: RequestInitEx): Promise<T> {
 
   if (res.status === 204) return undefined as T;
 
-  // Try JSON
   try {
     return (await res.json()) as T;
   } catch {
-    // Plain text fallback
     const txt = await res.text();
     return txt as unknown as T;
   }
@@ -477,7 +473,7 @@ function ym(y?: number | null, m?: number | null) {
 
 // -------------------------- UI ---------------------
 
-export default function RebatesTab(props: { scenarioId?: number }) {
+export default function RebatesTab(props: { scenarioId?: number; onMarkedReady?: () => void }) {
   const urlScenarioId = useScenarioIdFromUrl();
   const scenarioId = props.scenarioId ?? urlScenarioId;
 
@@ -509,20 +505,14 @@ export default function RebatesTab(props: { scenarioId?: number }) {
   }, [scenarioId, refreshTick]);
 
   const startCreate = () => setEdit({ mode: "create", draft: emptyDraft() });
-
-  const startEdit = (row: RebateRow) => {
-    setEdit({ mode: "edit", id: row.id, draft: rowToDraft(row) });
-  };
-
+  const startEdit = (row: RebateRow) => setEdit({ mode: "edit", id: row.id, draft: rowToDraft(row) });
   const cancelEdit = () => setEdit({ mode: "none" });
 
   const remove = async (row: RebateRow) => {
     if (!scenarioId) return;
     if (!confirm(`Delete rebate "${row.name}"?`)) return;
     try {
-      await api(`/scenarios/${scenarioId}/rebates/${row.id}`, {
-        method: "DELETE",
-      });
+      await api(`/scenarios/${scenarioId}/rebates/${row.id}`, { method: "DELETE" });
       doRefresh();
     } catch (e: any) {
       alert(e?.message || String(e));
@@ -555,7 +545,10 @@ export default function RebatesTab(props: { scenarioId?: number }) {
       alert("name, kind, scope and basis are required.");
       return;
     }
-    if (d.kind === "percent" && (d.percent_value === undefined || d.percent_value === null || d.percent_value === "")) {
+    if (
+      d.kind === "percent" &&
+      (d.percent_value === undefined || d.percent_value === null || d.percent_value === "")
+    ) {
       alert("percent_value is required for kind='percent'.");
       return;
     }
@@ -591,7 +584,7 @@ export default function RebatesTab(props: { scenarioId?: number }) {
     return (
       <div className="bg-gray-50 rounded p-3 text-xs text-gray-700">
         {/* Notes */}
-        {(r.notes && r.notes.trim() !== "") && (
+        {r.notes && r.notes.trim() !== "" && (
           <div className="mb-2">
             <span className="font-semibold">Notes:</span> {r.notes}
           </div>
@@ -608,7 +601,7 @@ export default function RebatesTab(props: { scenarioId?: number }) {
         {r.kind === "tier_percent" && (
           <div className="mb-2">
             <div className="font-semibold mb-1">Tiers:</div>
-            {(r.tiers && r.tiers.length > 0) ? (
+            {r.tiers && r.tiers.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="min-w-[640px] border border-gray-200">
                   <thead className="bg-white">
@@ -645,7 +638,7 @@ export default function RebatesTab(props: { scenarioId?: number }) {
         {r.kind === "lump_sum" && (
           <div className="mb-2">
             <div className="font-semibold mb-1">Lump Sums:</div>
-            {(r.lumps && r.lumps.length > 0) ? (
+            {r.lumps && r.lumps.length > 0 ? (
               <div className="overflow-x-auto">
                 <table className="min-w-[640px] border border-gray-200">
                   <thead className="bg-white">
@@ -684,6 +677,16 @@ export default function RebatesTab(props: { scenarioId?: number }) {
         <div className="flex justify-between items-center mb-3">
           <h3 className="font-semibold">Scenario Rebates</h3>
           <div className="flex gap-2">
+            {/* New: Mark ready → Rise & Fall */}
+            {props.onMarkedReady && (
+              <button
+                className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+                title="Mark Ready and go to Rise & Fall"
+                onClick={props.onMarkedReady}
+              >
+                Mark Ready → Rise &amp; Fall
+              </button>
+            )}
             <button className="btn btn-secondary" onClick={doRefresh}>
               Refresh
             </button>

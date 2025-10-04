@@ -49,7 +49,7 @@ function toArraySafe(x: any): any[] {
 
 /* ===================== Types ===================== */
 
-type Props = { scenarioId: number };
+type Props = { scenarioId: number; onMarkedReady?: () => void };
 
 type ServiceRow = {
   id: number;
@@ -270,7 +270,7 @@ function ChartSafe({
 
 /* ===================== Component ===================== */
 
-export default function RiseAndFallTab({ scenarioId }: Props) {
+export default function RiseAndFallTab({ scenarioId, onMarkedReady }: Props) {
   // ---------- state ----------
   const [services, setServices] = useState<ServiceRow[]>([]);
   const [boqs, setBOQs] = useState<BOQItem[]>([]);
@@ -558,6 +558,19 @@ export default function RiseAndFallTab({ scenarioId }: Props) {
 
   return (
     <ErrorBoundary>
+      {/* Header actions (navigation) */}
+      {onMarkedReady && (
+        <div className="flex items-center justify-end mb-2">
+          <button
+            className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+            title="Mark Ready and go to 5. CAPEX"
+            onClick={onMarkedReady}
+          >
+            Mark Ready → CAPEX
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-12 gap-4">
         {/* Left: selector */}
         <aside className="col-span-4 border rounded-xl p-3 bg-white">
