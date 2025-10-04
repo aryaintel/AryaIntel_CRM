@@ -2,7 +2,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../../../lib/api";
 
-type Props = { scenarioId: number };
+type Props = {
+  scenarioId: number;
+  /** Optional: when user clicks "Mark Ready", caller can navigate to next tab */
+  onMarkedReady?: () => void;
+};
 
 /* ---------- Types (aktif swagger’a göre) ---------- */
 type Scope = "services" | "capex" | "all";
@@ -53,7 +57,7 @@ function cls(...a: (string | false | undefined)[]) {
 const fmt2 = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /* ========== Component ========== */
-export default function EscalationTab({ scenarioId }: Props) {
+export default function EscalationTab({ scenarioId, onMarkedReady }: Props) {
   const [policies, setPolicies] = useState<EscalationPolicy[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -256,6 +260,14 @@ export default function EscalationTab({ scenarioId }: Props) {
       <div className="flex items-center justify-between">
         <h3 className="text-xl font-semibold">Escalation (Preview)</h3>
         <div className="flex gap-2">
+          {/* New: Mark Ready -> Rebates */}
+          <button
+            onClick={onMarkedReady}
+            className="px-3 py-1.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 text-sm"
+            title="Mark Ready and go to Rebates"
+          >
+            Mark Ready → Rebates
+          </button>
           <button onClick={openCreate} className="px-3 py-1.5 rounded-md border text-sm hover:bg-gray-50">
             Add Policy
           </button>

@@ -1,3 +1,4 @@
+// frontend/src/pages/scenario/Scenario.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, ApiError } from "../../lib/api";
@@ -458,7 +459,13 @@ export default function ScenarioPage() {
 
           {tab === "escalation" && (
             <div className="rounded border p-4 bg-white">
-              <EscalationTab scenarioId={id} />
+              <EscalationTab
+                scenarioId={id}
+                onMarkedReady={async () => {
+                  // No server state to toggle for escalation; just navigate
+                  setTabRaw("rebates");
+                }}
+              />
             </div>
           )}
 
