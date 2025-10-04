@@ -1,5 +1,4 @@
-﻿// frontend/src/pages/scenario/tabs/FXTab.tsx
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete, ApiError } from "../../../lib/api";
 
 type Props = {
@@ -68,7 +67,7 @@ export default function FXTab({ scenarioId, onMarkedReady, isReady }: Props) {
   const [resMonth, setResMonth] = useState<number>(now.m);
   const [resolved, setResolved] = useState<ResolveResponse | null>(null);
 
-  // Base URL'ler (PUT/DELETE iki varyasyonu da destekle)
+  // Base URL'ler
   const listBase = `/scenarios/${scenarioId}/fx`; // GET/POST + resolve
   const idBase = `/scenarios/fx`;                 // tercih edilen PUT/DELETE
   const fallbackIdBase = listBase;                // bazı kurulumlarda PUT/DELETE aynı list path’inde olabilir
@@ -199,7 +198,8 @@ export default function FXTab({ scenarioId, onMarkedReady, isReady }: Props) {
   async function markReady() {
     if (!confirm("Mark FX as ready and move to TAX?")) return;
     try {
-      await apiPost(`/scenarios/${scenarioId}/workflow/mark-fx-ready`, {});
+      // ⚠️ SADECE BURASI: workflow uçları /api altında
+      await apiPost(`/api/scenarios/${scenarioId}/workflow/mark-fx-ready`, {});
       onMarkedReady?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Cannot mark FX as ready.");

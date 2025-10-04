@@ -242,7 +242,8 @@ export default function TaxTab({ scenarioId, onMarkedReady, isReady }: Props) {
   async function markReady() {
     if (!confirm("Mark TAX as ready and move to SERVICES?")) return;
     try {
-      await apiPost(`/scenarios/${scenarioId}/workflow/mark-tax-ready`, {});
+      // 🔧 DÜZELTME: workflow uçları /api altında
+      await apiPost(`/api/scenarios/${scenarioId}/workflow/mark-tax-ready`, {});
       onMarkedReady?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Cannot mark TAX as ready.");

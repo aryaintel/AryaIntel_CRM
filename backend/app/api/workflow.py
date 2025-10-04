@@ -19,17 +19,16 @@ router = APIRouter(
 
 # -------------------------- Helpers & order --------------------------
 
-# Readiness stages (Index & Escalation are ungated, so not part of flags)
+# Readiness stages
+# Index, Escalation, Rebates ve Rise&Fall "ungated" kabul edilir;
+# akışı kilitlemezler, bu yüzden aşama sırasına dahil etmiyoruz.
 STAGES = [
     "boq",
     "twc",
-    # (index, escalation) are ungated – user can go anytime
     "capex",
     "fx",
     "tax",
     "services",
-    "rebates",
-    "rise_fall",
     "summary",  # aka PL
 ]
 STAGE_TO_FLAG = {
@@ -39,8 +38,6 @@ STAGE_TO_FLAG = {
     "fx": "fx_ready",
     "tax": "tax_ready",
     "services": "services_ready",
-    "rebates": "rebates_ready",
-    "rise_fall": "rise_fall_ready",
     "summary": "summary_ready",
 }
 
@@ -118,20 +115,31 @@ def _try_set_flag(obj: Scenario, name: str, value: bool) -> None:
 
 
 def _derive_from_state(state: str) -> Dict[str, bool]:
-    """Backward compatible derivation from legacy workflow_state."""
+    """
+    Backward compatible derivation from legacy workflow_state.
+
+    Doğru eşikler:
+      - 'boq_ready'       => idx >= boq_ready
+      - 'twc_ready'       => idx >= twc_ready
+      - 'capex_ready'     => idx >= capex_ready
+      - 'fx_ready'        => idx >= fx_ready
+      - 'tax_ready'       => idx >= tax_ready
+      - 'services_ready'  => idx >= services_ready
+      - 'summary_ready'   => idx >= ready
+    """
     s = state or "draft"
     idx = STATE_IDX.get(s, 0)
     return {
-        "boq_ready": idx >= STATE_IDX["twc_ready"],
-        "twc_ready": idx >= STATE_IDX["capex_ready"],
-        "capex_ready": idx >= STATE_IDX["fx_ready"],
-        "fx_ready": idx >= STATE_IDX["tax_ready"],
-        "tax_ready": idx >= STATE_IDX["services_ready"],
-        "services_ready": idx >= STATE_IDX["ready"],
-        # not tracked in legacy:
-        "rebates_ready": False,
+        "boq_ready":       idx >= STATE_IDX["boq_ready"],
+        "twc_ready":       idx >= STATE_IDX["twc_ready"],
+        "capex_ready":     idx >= STATE_IDX["capex_ready"],
+        "fx_ready":        idx >= STATE_IDX["fx_ready"],
+        "tax_ready":       idx >= STATE_IDX["tax_ready"],
+        "services_ready":  idx >= STATE_IDX["services_ready"],
+        # legacy state bunları izlemez:
+        "rebates_ready":   False,
         "rise_fall_ready": False,
-        "summary_ready": idx >= STATE_IDX["ready"],
+        "summary_ready":   idx >= STATE_IDX["ready"],
     }
 
 
@@ -145,8 +153,9 @@ def _flags_from_model(sc: Scenario) -> Dict[str, bool]:
         "fx_ready":        _coalesce_bool(sc, "is_fx_ready",        derived["fx_ready"]),
         "tax_ready":       _coalesce_bool(sc, "is_tax_ready",       derived["tax_ready"]),
         "services_ready":  _coalesce_bool(sc, "is_services_ready",  derived["services_ready"]),
-        "rebates_ready":   _coalesce_bool(sc, "is_rebates_ready",   derived["rebates_ready"]),
-        "rise_fall_ready": _coalesce_bool(sc, "is_rise_fall_ready", derived["rise_fall_ready"]),
+        # ungated feature bayrakları – varsa okunur, yoksa False
+        "rebates_ready":   _coalesce_bool(sc, "is_rebates_ready",   False),
+        "rise_fall_ready": _coalesce_bool(sc, "is_rise_fall_ready", False),
         "summary_ready":   _coalesce_bool(sc, "is_summary_ready",   derived["summary_ready"]),
     }
     return flags

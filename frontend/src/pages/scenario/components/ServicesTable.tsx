@@ -62,7 +62,7 @@ const paymentTerms: PaymentTerm[] = ["monthly", "annual_prepaid", "one_time"];
 const cashPolicies: CashOutPolicy[] = ["service_month", "start_month", "contract_anniversary"];
 const escalationFreqs: EscalationFreq[] = ["annual", "none"];
 
-// ortak gri buton stili
+// ortak buton stilleri
 const BTN_BASE =
   "px-3 py-1.5 rounded-md border text-sm hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed";
 const BTN_PRIMARY =
@@ -108,7 +108,7 @@ export default function ServicesTable({ scenarioId, onMarkedReady, isReady }: Pr
   const [editing, setEditing] = useState<ServiceRow | null>(null);
   const [showForm, setShowForm] = useState(false);
 
-  // default year/month (today) – if you prefer scenario start date, wire it in
+  // default year/month (today)
   const now = useMemo(() => {
     const d = new Date();
     return { y: d.getFullYear(), m: d.getMonth() + 1 };
@@ -206,10 +206,17 @@ export default function ServicesTable({ scenarioId, onMarkedReady, isReady }: Pr
     }
   }
 
+  // NOTE: Workflow router backend'te /api altında mount ediliyor.
+  // Önce yeni yolu dener, 404 olursa eski yola düşer.
   async function markReady() {
-    if (!confirm("Mark SERVICES as ready and move to P&L?")) return;
+    if (!confirm("Mark SERVICES as ready and move to Summary?")) return;
     try {
-      await apiPost(`/scenarios/${scenarioId}/workflow/mark-services-ready`, {});
+      try {
+        await apiPost(`/api/scenarios/${scenarioId}/workflow/mark-services-ready`, {});
+      } catch (e: any) {
+        // legacy fallback
+        await apiPost(`/scenarios/${scenarioId}/workflow/mark-services-ready`, {});
+      }
       onMarkedReady?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Cannot mark SERVICES as ready.");
@@ -236,10 +243,10 @@ export default function ServicesTable({ scenarioId, onMarkedReady, isReady }: Pr
                 ? "Already marked ready"
                 : rows.length === 0
                 ? "Add at least one service first"
-                : "Mark SERVICES as ready and move to P&L"
+                : "Mark SERVICES as ready and move to Summary"
             }
           >
-            Mark SERVICES Ready &rarr; P&L
+            Mark SERVICES Ready &rarr; Summary
           </button>
         </div>
       </div>

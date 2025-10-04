@@ -83,6 +83,7 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
     setLoading(true);
     setErr(null);
     try {
+      // ❗ TWC uçları API öneksiz: /scenarios/...
       const data = await apiGet<TWCOut>(`/scenarios/${scenarioId}/twc`);
       setTwc(data);
     } catch (e: any) {
@@ -110,6 +111,7 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
         twc_safety_stock_pct_cogs: num(twc.twc_safety_stock_pct_cogs),
         twc_other_wc_fixed: num(twc.twc_other_wc_fixed),
       };
+      // ❗ API öneksiz
       const res = await apiPut<TWCOut>(`/scenarios/${scenarioId}/twc`, payload);
       setTwc(res);
       alert("TWC saved.");
@@ -123,6 +125,7 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
   async function preview() {
     setErr(null);
     try {
+      // ❗ API öneksiz
       const res = await apiPost<TWCPreview>(`/scenarios/${scenarioId}/twc/preview`, {});
       setPv(res);
     } catch (e: any) {
@@ -134,9 +137,8 @@ export default function TWCTab({ scenarioId, onMarkedReady }: Props) {
   async function markReady() {
     if (!confirm("Mark TWC as ready and move to Index?")) return;
     try {
-      // Use legacy path (works under both prefixes on the BE)
-      await apiPost(`/scenarios/${scenarioId}/workflow/mark-twc-ready`, {});
-
+      // ✅ Workflow uçları /api altında
+      await apiPost(`/api/scenarios/${scenarioId}/workflow/mark-twc-ready`, {});
       alert("Workflow moved to Index.");
       onMarkedReady?.();
     } catch (e: any) {
