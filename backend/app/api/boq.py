@@ -4,18 +4,15 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, func
 
 from ..models import Scenario, ScenarioBOQItem
 from .deps import get_db, get_current_user  # Current user dependency (token)
-# Eğer projede izin kontrolü kullanıyorsanız şu satırı açın:
-# from .deps import require_permissions
 
 router = APIRouter(
     prefix="/scenarios",
     tags=["boq"],
 )
-
 
 # =========================
 # Pydantic Schemas

@@ -6,13 +6,13 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from ..models import Scenario, ScenarioBOQItem
 from .deps import get_db, get_current_user
 
 # Router: explicit paths added per endpoint (both legacy and refactor paths)
 router = APIRouter(tags=["boq"])
-
 
 # ---------------------------
 # Helpers
@@ -23,14 +23,12 @@ def _ensure_scenario(db: Session, scenario_id: int) -> Scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
     return sc
 
-
 def _ym(year: Optional[int], month: Optional[int]) -> Tuple[Optional[int], Optional[int]]:
     if year is None and month is None:
         return None, None
     if year is None or month is None or not (1 <= int(month) <= 12):
         raise HTTPException(status_code=400, detail="Invalid start year/month")
     return int(year), int(month)
-
 
 # ---------------------------
 # Schemas
@@ -42,15 +40,12 @@ class BOQItemIn(BaseModel):
     quantity: Decimal = Field(default=0)
     unit_price: Decimal = Field(default=0)
     unit_cogs: Optional[Decimal] = None
-
     frequency: str = Field(default="once")  # once|monthly|quarterly|annual
     start_year: Optional[int] = None
     start_month: Optional[int] = Field(default=None, ge=1, le=12)
     months: Optional[int] = None
-
     formulation_id: Optional[int] = None
     price_escalation_policy_id: Optional[int] = None
-
     is_active: bool = True
     notes: Optional[str] = None
     category: Optional[str] = None  # bulk_with_freight|bulk_ex_freight|freight
@@ -71,7 +66,6 @@ class BOQItemIn(BaseModel):
             raise ValueError(f"category must be one of {sorted(allowed)}")
         return v
 
-
 class BOQItemOut(BaseModel):
     id: int
     scenario_id: int
@@ -90,13 +84,45 @@ class BOQItemOut(BaseModel):
     is_active: bool
     notes: Optional[str]
     category: Optional[str]
-
     class Config:
         orm_mode = True
 
+class ScenarioOut(BaseModel):
+    id: int
+    name: str
+    months: int
+    start_date: str
+    is_boq_ready: bool
+    is_twc_ready: bool
+    is_capex_ready: bool
+    is_services_ready: bool
+    class Config:
+        orm_mode = True
 
 # ---------------------------
-# LIST
+# LIST: SCENARIOS (NEW)
+# ---------------------------
+@router.get("/boq/scenarios", response_model=List[ScenarioOut])
+def list_scenarios(
+    q: Optional[str] = Query(None, description="Name contains (case-insensitive)"),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    qry = db.query(Scenario)
+    if q:
+        qry = qry.filter(Scenario.name.ilike(f"%{q}%"))
+    rows = (
+        qry.order_by(Scenario.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+# ---------------------------
+# LIST: BOQ items (existing)
 # ---------------------------
 @router.get("/scenarios/{scenario_id}/boq", response_model=List[BOQItemOut])
 @router.get("/business-cases/scenarios/{scenario_id}/boq", response_model=List[BOQItemOut])
@@ -113,7 +139,6 @@ def list_boq_items(
     q = q.order_by(ScenarioBOQItem.id.desc())
     items = q.all()
     return items
-
 
 # ---------------------------
 # CREATE
@@ -151,7 +176,6 @@ def create_boq_item(
     db.commit()
     db.refresh(item)
     return {"id": item.id}
-
 
 # ---------------------------
 # UPDATE
@@ -194,7 +218,6 @@ def update_boq_item(
     db.commit()
     return {"updated": 1}
 
-
 # ---------------------------
 # DELETE
 # ---------------------------
@@ -214,7 +237,6 @@ def delete_boq_item(
     db.commit()
     return {"deleted": True}
 
-
 # ---------------------------
 # MARK READY  (NEW)
 # ---------------------------
@@ -230,3 +252,71 @@ def mark_boq_ready(
         sc.is_boq_ready = True
         db.commit()
     return {"ok": True}
+
+# ---------------------------
+# DEBUG: which DB / quick counts (NEW)
+# ---------------------------
+@router.get("/boq/_debug/db")
+@router.get("/business-cases/_debug/db")
+def debug_db_info(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """
+    Bu router'ın bağlı olduğu veritabanını ve bazı tablo sayımlarını gösterir.
+    Swagger'dan pricing tarafıyla karşılaştırabilirsiniz.
+    """
+    engine = db.get_bind()
+    url = str(engine.url)
+    try:
+        pragma_rows = db.execute(text("PRAGMA database_list")).fetchall()
+        database_list = [dict(row) for row in pragma_rows]
+    except Exception:
+        database_list = []
+
+    def count(tbl: str):
+        try:
+            return int(db.execute(text(f"SELECT COUNT(*) AS c FROM {tbl}")).scalar() or 0)
+        except Exception:
+            return None
+
+    return {
+        "engine_url": url,
+        "sqlite_database_list": database_list,
+        "counts": {
+            "scenarios": count("scenarios"),
+            "scenario_boq_items": count("scenario_boq_items"),
+            "price_books": count("price_books"),
+            "price_book_entries": count("price_book_entries"),
+        },
+    }
+
+@router.get("/boq/_debug/count")
+def debug_count(
+    table: str = Query(..., description="Whitelisted table name"),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    whitelist = {
+        "scenarios",
+        "scenario_boq_items",
+        "price_books",
+        "price_book_entries",
+    }
+    if table not in whitelist:
+        raise HTTPException(status_code=400, detail=f"table must be one of: {sorted(whitelist)}")
+    n = int(db.execute(text(f"SELECT COUNT(*) AS c FROM {table}")).scalar() or 0)
+    return {"table": table, "count": n}
+
+@router.get("/boq/_debug/sample")
+def debug_sample(
+    table: str = Query(...),
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    try:
+        rows = db.execute(text(f"SELECT * FROM {table} LIMIT :lim"), {"lim": limit}).mappings().all()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"bad table: {e}")
+    return [dict(r) for r in rows]
