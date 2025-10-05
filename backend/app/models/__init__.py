@@ -818,7 +818,7 @@ class ScenarioTaxRule(Base):
 
 
 # =========================
-# Scenario Rebates (NEW)
+# Scenario Rebates (NEW)f
 # =========================
 class ScenarioRebate(Base):
     __tablename__ = "scenario_rebates"
