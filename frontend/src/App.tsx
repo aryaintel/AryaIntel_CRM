@@ -37,6 +37,9 @@ import ProductsPage from "./pages/ProductsPage";
 // NEW: Debug health page
 import Health from "./pages/debug/Health";
 
+// NEW: BOQ Console (2. özellik)
+import BoqConsole from "./pages/BoqConsole";
+
 import { apiGet, ApiError } from "./lib/api";
 import { clearToken, getToken, AUTH_EVENT } from "./lib/auth";
 
@@ -53,7 +56,8 @@ function usePageTitle() {
   if (pathname.startsWith("/deals")) return "Opportunities";
   if (pathname.startsWith("/business-cases")) return "Business Cases";
   if (pathname.startsWith("/scenarios")) return "Scenario";
-  if (pathname.startsWith("/products")) return "Products"; // ← eklendi
+  if (pathname.startsWith("/products")) return "Products";
+  if (pathname.startsWith("/boq-console")) return "BOQ Console";
   if (pathname.startsWith("/users")) return "Users";
   if (pathname.startsWith("/roles")) return "Roles";
   if (pathname.startsWith("/login")) return "Login";
@@ -200,6 +204,18 @@ export default function App() {
             Products
           </NavLink>
 
+          {/* NEW: BOQ Console */}
+          <NavLink
+            to="/boq-console"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
+            }
+          >
+            BOQ Console
+          </NavLink>
+
           {/* Business Case / Scenario menüden değil, detaydan gidiliyor */}
           {isAdmin && (
             <>
@@ -344,6 +360,16 @@ export default function App() {
               element={
                 <RequireAuth>
                   <ProductsPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: BOQ Console rotası */}
+            <Route
+              path="/boq-console"
+              element={
+                <RequireAuth>
+                  <BoqConsole />
                 </RequireAuth>
               }
             />

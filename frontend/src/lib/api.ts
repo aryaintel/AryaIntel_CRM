@@ -45,17 +45,14 @@ async function readPayload(res: Response): Promise<{ message: string; payload: u
   let payload: unknown = null;
   let message = res.statusText || "Request failed";
 
-  // JSON dene
   try {
     payload = await res.clone().json();
     const p = payload as any;
 
-    // FastAPI tipik hata formatları
     if (p?.detail) {
       if (typeof p.detail === "string") {
         message = p.detail;
       } else if (Array.isArray(p.detail)) {
-        // validation errors
         const first = p.detail[0];
         if (first?.msg) {
           const loc = Array.isArray(first?.loc) ? first.loc.join(".") : "";
@@ -69,7 +66,6 @@ async function readPayload(res: Response): Promise<{ message: string; payload: u
     }
     return { message, payload };
   } catch {
-    // Text dene
     try {
       const txt = await res.text();
       payload = txt;
@@ -96,7 +92,6 @@ async function request<T>(
     ...authHeader(token),
   };
 
-  // Body varsa Content-Type (FormData/Blob değilse)
   const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
   if (body !== undefined && !isFormData) {
     headers["Content-Type"] = "application/json";
@@ -113,9 +108,8 @@ async function request<T>(
         ? undefined
         : isFormData
         ? (body as any)
-      : JSON.stringify(body),
+        : JSON.stringify(body),
     signal: controller.signal,
-    // Cookie tabanlı oturum kullanıyorsanız yorum kaldırın:
     // credentials: "include",
   };
 
@@ -129,15 +123,8 @@ async function request<T>(
     res = await fetch(url, fetchInit);
   } catch (err: any) {
     clearTimeout(timer);
-    // Fetch "TypeError: Failed to fetch" -> çoğunlukla CORS ya da sunucu kapalı
     if (err?.name === "AbortError") {
-      throw new ApiError(
-        0,
-        `Request timed out after ${timeoutMs}ms`,
-        err,
-        method,
-        url
-      );
+      throw new ApiError(0, `Request timed out after ${timeoutMs}ms`, err, method, url);
     }
     const hint =
       err?.name === "TypeError"
@@ -154,12 +141,10 @@ async function request<T>(
     throw new ApiError(res.status, decorated, payload, method, url);
   }
 
-  // 204/205 No Content
   if (res.status === 204 || res.status === 205) {
     return undefined as unknown as T;
   }
 
-  // İçerik tipine göre parse et
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) {
     const data = (await res.json()) as T;
@@ -170,12 +155,10 @@ async function request<T>(
     return data;
   }
 
-  // JSON dönmeyen başarı yanıtlarını void kabul et
   return undefined as unknown as T;
 }
 
 /** ---------- Shorthands ---------- */
-// body'yi opsiyonel yaptık → mark-services-ready gibi gövdesiz POST'lar sorunsuz çalışır.
 export function apiGet<T>(path: string, token?: string | null, timeoutMs?: number) {
   return request<T>("GET", path, undefined, token, timeoutMs);
 }
@@ -188,12 +171,12 @@ export function apiPut<T>(path: string, body?: unknown, token?: string | null, t
 export function apiPatch<T>(path: string, body?: unknown, token?: string | null, timeoutMs?: number) {
   return request<T>("PATCH", path, body, token, timeoutMs);
 }
-export function apiDelete(path: string, token?: string | null, timeoutMs?: number) {
-  return request<void>("DELETE", path, undefined, token, timeoutMs);
+/** GENERIC DELETE */
+export function apiDelete<T = void>(path: string, token?: string | null, timeoutMs?: number) {
+  return request<T>("DELETE", path, undefined, token, timeoutMs);
 }
 
 /** ---------- Optional helpers ---------- */
-/** Backend 1.0.4'te current user → /me  */
 export function apiMe<T = any>() {
   return apiGet<T>("/me");
 }

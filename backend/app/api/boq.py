@@ -1,4 +1,3 @@
-# backend/app/api/boq.py
 from typing import List, Optional
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
@@ -35,6 +34,9 @@ class BOQItemIn(BaseModel):
     start_month: Optional[int] = Field(None, ge=1, le=12)
     months: Optional[int] = Field(None, ge=1, le=120)
 
+    # NEW: optional link to Product
+    product_id: Optional[int] = None
+
     is_active: bool = True
     notes: Optional[str] = None
 
@@ -67,6 +69,8 @@ class BOQItemOut(BaseModel):
     start_year: Optional[int]
     start_month: Optional[int]
     months: Optional[int]
+    # NEW
+    product_id: Optional[int]
     is_active: bool
     notes: Optional[str]
     category: Optional[str]
@@ -137,6 +141,7 @@ def create_boq_item(
         start_year=payload.start_year,
         start_month=payload.start_month,
         months=payload.months,
+        product_id=payload.product_id,   # NEW
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -218,6 +223,7 @@ def bulk_insert_boq_items(
                 start_year=item.start_year,
                 start_month=item.start_month,
                 months=item.months,
+                product_id=item.product_id,   # NEW
                 is_active=item.is_active,
                 notes=item.notes,
                 category=item.category,
@@ -268,3 +274,309 @@ def mark_boq_ready(
         "workflow_state": sc.workflow_state,
         "message": "BOQ marked as ready. Next step: TWC.",
     }
+
+
+# ------------------------------------------------------------------
+# Aşağıdaki ikinci bölüm eski rotaların refactor'ı — senkronize edildi
+# ------------------------------------------------------------------
+from __future__ import annotations
+
+from typing import List as _List, Optional as _Optional, Tuple
+from decimal import Decimal as _Decimal
+
+from fastapi import APIRouter as _APIRouter, Depends as _Depends, HTTPException as _HTTPException, Path as _Path, Query as _Query, status as _status
+from pydantic import BaseModel as _BaseModel, Field as _Field, validator as _validator
+from sqlalchemy.orm import Session as _Session
+from sqlalchemy import text as _text
+
+from ..models import Scenario as _Scenario, ScenarioBOQItem as _ScenarioBOQItem
+from .deps import get_db as _get_db, get_current_user as _get_current_user
+
+# Router: explicit paths added per endpoint (both legacy and refactor paths)
+router2 = _APIRouter(tags=["boq"])
+
+def _ensure_scenario2(db: _Session, scenario_id: int) -> _Scenario:
+    sc = db.get(_Scenario, scenario_id)
+    if not sc:
+        raise _HTTPException(status_code=404, detail="Scenario not found")
+    return sc
+
+def _ym(year: _Optional[int], month: _Optional[int]) -> Tuple[_Optional[int], _Optional[int]]:
+    if year is None and month is None:
+        return None, None
+    if year is None or month is None or not (1 <= int(month) <= 12):
+        raise _HTTPException(status_code=400, detail="Invalid start year/month")
+    return int(year), int(month)
+
+class BOQItemIn2(_BaseModel):
+    section: _Optional[str] = None
+    item_name: str
+    unit: str
+    quantity: _Decimal = _Field(default=0)
+    unit_price: _Decimal = _Field(default=0)
+    unit_cogs: _Optional[_Decimal] = None
+    frequency: str = _Field(default="once")  # once|monthly|quarterly|annual
+    start_year: _Optional[int] = None
+    start_month: _Optional[int] = _Field(default=None, ge=1, le=12)
+    months: _Optional[int] = None
+    formulation_id: _Optional[int] = None
+    price_escalation_policy_id: _Optional[int] = None
+    # NEW
+    product_id: _Optional[int] = None
+    is_active: bool = True
+    notes: _Optional[str] = None
+    category: _Optional[str] = None  # bulk_with_freight|bulk_ex_freight|freight
+
+    @_validator("frequency")
+    def _freq_ok(cls, v: str) -> str:
+        allowed = {"once", "monthly", "quarterly", "annual"}
+        if v not in allowed:
+            raise ValueError(f"frequency must be one of {sorted(allowed)}")
+        return v
+
+    @_validator("category")
+    def _cat_ok(cls, v: _Optional[str]) -> _Optional[str]:
+        if v is None:
+            return v
+        allowed = {"bulk_with_freight", "bulk_ex_freight", "freight"}
+        if v not in allowed:
+            raise ValueError(f"category must be one of {sorted(allowed)}")
+        return v
+
+class BOQItemOut2(_BaseModel):
+    id: int
+    scenario_id: int
+    section: _Optional[str]
+    item_name: str
+    unit: str
+    quantity: _Decimal
+    unit_price: _Decimal
+    unit_cogs: _Optional[_Decimal]
+    frequency: str
+    start_year: _Optional[int]
+    start_month: _Optional[int]
+    months: _Optional[int]
+    formulation_id: _Optional[int]
+    price_escalation_policy_id: _Optional[int]
+    # NEW
+    product_id: _Optional[int]
+    is_active: bool
+    notes: _Optional[str]
+    category: _Optional[str]
+    class Config:
+        orm_mode = True
+
+class ScenarioOut(_BaseModel):
+    id: int
+    name: str
+    months: int
+    start_date: str
+    is_boq_ready: bool
+    is_twc_ready: bool
+    is_capex_ready: bool
+    is_services_ready: bool
+    class Config:
+        orm_mode = True
+
+@router2.get("/boq/scenarios", response_model=_List[ScenarioOut])
+def list_scenarios(
+    q: _Optional[str] = _Query(None, description="Name contains (case-insensitive)"),
+    limit: int = _Query(50, ge=1, le=500),
+    offset: int = _Query(0, ge=0),
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    qry = db.query(_Scenario)
+    if q:
+        qry = qry.filter(_Scenario.name.ilike(f"%{q}%"))
+    rows = (
+        qry.order_by(_Scenario.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return rows
+
+@router2.get("/scenarios/{scenario_id}/boq", response_model=_List[BOQItemOut2])
+@router2.get("/business-cases/scenarios/{scenario_id}/boq", response_model=_List[BOQItemOut2])
+def list_boq_items_2(
+    scenario_id: int = _Path(..., ge=1),
+    active: _Optional[bool] = _Query(None),
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    _ensure_scenario2(db, scenario_id)
+    q = db.query(_ScenarioBOQItem).filter(_ScenarioBOQItem.scenario_id == scenario_id)
+    if active is not None:
+        q = q.filter(_ScenarioBOQItem.is_active == bool(active))
+    q = q.order_by(_ScenarioBOQItem.id.desc())
+    items = q.all()
+    return items
+
+@router2.post("/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED)
+@router2.post("/business-cases/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED)
+def create_boq_item_2(
+    scenario_id: int,
+    payload: BOQItemIn2,
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    _ensure_scenario2(db, scenario_id)
+    sy, sm = _ym(payload.start_year, payload.start_month)
+
+    item = _ScenarioBOQItem(
+        scenario_id=scenario_id,
+        section=payload.section,
+        item_name=payload.item_name,
+        unit=payload.unit,
+        quantity=payload.quantity,
+        unit_price=payload.unit_price,
+        unit_cogs=payload.unit_cogs,
+        frequency=payload.frequency,
+        start_year=sy,
+        start_month=sm,
+        months=payload.months,
+        formulation_id=payload.formulation_id,
+        price_escalation_policy_id=payload.price_escalation_policy_id,
+        product_id=payload.product_id,   # NEW
+        is_active=payload.is_active,
+        notes=payload.notes,
+        category=payload.category,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id}
+
+@router2.put("/scenarios/{scenario_id}/boq/{item_id}")
+@router2.put("/business-cases/scenarios/{scenario_id}/boq/{item_id}")
+def update_boq_item_2(
+    scenario_id: int,
+    item_id: int,
+    payload: BOQItemIn2,
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    _ensure_scenario2(db, scenario_id)
+    item = db.get(_ScenarioBOQItem, item_id)
+    if not item or item.scenario_id != scenario_id:
+        raise _HTTPException(status_code=404, detail="BOQ item not found")
+
+    sy, sm = _ym(payload.start_year, payload.start_month)
+
+    for k, v in dict(
+        section=payload.section,
+        item_name=payload.item_name,
+        unit=payload.unit,
+        quantity=payload.quantity,
+        unit_price=payload.unit_price,
+        unit_cogs=payload.unit_cogs,
+        frequency=payload.frequency,
+        start_year=sy,
+        start_month=sm,
+        months=payload.months,
+        formulation_id=payload.formulation_id,
+        price_escalation_policy_id=payload.price_escalation_policy_id,
+        product_id=payload.product_id,   # NEW
+        is_active=payload.is_active,
+        notes=payload.notes,
+        category=payload.category,
+    ).items():
+        setattr(item, k, v)
+
+    db.commit()
+    return {"updated": 1}
+
+@router2.delete("/scenarios/{scenario_id}/boq/{item_id}")
+@router2.delete("/business-cases/scenarios/{scenario_id}/boq/{item_id}")
+def delete_boq_item_2(
+    scenario_id: int,
+    item_id: int,
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    _ensure_scenario2(db, scenario_id)
+    item = db.get(_ScenarioBOQItem, item_id)
+    if not item or item.scenario_id != scenario_id:
+        raise _HTTPException(status_code=404, detail="BOQ item not found")
+    db.delete(item)
+    db.commit()
+    return {"deleted": True}
+
+@router2.post("/scenarios/{scenario_id}/boq/mark-ready")
+@router2.post("/business-cases/scenarios/{scenario_id}/boq/mark-ready")
+def mark_boq_ready_2(
+    scenario_id: int,
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    sc = _ensure_scenario2(db, scenario_id)
+    if not sc.is_boq_ready:
+        sc.is_boq_ready = True
+        db.commit()
+    return {"ok": True}
+
+@router2.get("/boq/_debug/db")
+@router2.get("/business-cases/_debug/db")
+def debug_db_info_2(
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    engine = db.get_bind()
+    url = str(engine.url)
+    try:
+        pragma_rows = db.execute(_text("PRAGMA database_list")).fetchall()
+        database_list = [dict(row) for row in pragma_rows]
+    except Exception:
+        database_list = []
+
+    def count(tbl: str):
+        try:
+            return int(db.execute(_text(f"SELECT COUNT(*) AS c FROM {tbl}")).scalar() or 0)
+        except Exception:
+            return None
+
+    return {
+        "engine_url": url,
+        "sqlite_database_list": database_list,
+        "counts": {
+            "scenarios": count("scenarios"),
+            "scenario_boq_items": count("scenario_boq_items"),
+            "price_books": count("price_books"),
+            "price_book_entries": count("price_book_entries"),
+        },
+    }
+
+@router2.get("/boq/_debug/count")
+def debug_count_2(
+    table: str = _Query(..., description="Whitelisted table name"),
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    whitelist = {
+        "scenarios",
+        "scenario_boq_items",
+        "price_books",
+        "price_book_entries",
+    }
+    if table not in whitelist:
+        raise _HTTPException(status_code=400, detail=f"table must be one of: {sorted(whitelist)}")
+    n = int(db.execute(_text(f"SELECT COUNT(*) AS c FROM {table}")).scalar() or 0)
+    return {"table": table, "count": n}
+
+@router2.get("/boq/_debug/sample")
+def debug_sample_2(
+    table: str = _Query(...),
+    limit: int = _Query(10, ge=1, le=100),
+    db: _Session = _Depends(_get_db),
+    user=_Depends(_get_current_user),
+):
+    try:
+        rows = db.execute(_text(f"SELECT * FROM {table} LIMIT :lim"), {"lim": limit}).mappings().all()
+    except Exception as e:
+        raise _HTTPException(status_code=400, detail=f"bad table: {e}")
+    return [dict(r) for r in rows]
+
+# Mount second router
+from fastapi import APIRouter as _APIRouterAlias
+router_alias: _APIRouterAlias = router2

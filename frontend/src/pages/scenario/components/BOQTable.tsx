@@ -17,7 +17,7 @@ type BOQItem = {
   section?: string | null;
   category?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
 
-  // NEW: optional link to product
+  // NEW: link to product (nullable)
   product_id?: number | null;
 
   item_name: string;
@@ -141,7 +141,6 @@ function ProductPicker({
         const fam = await apiGet<FamiliesListResp>("/api/product-families");
         setFamilies(fam.items || []);
       } catch (e: any) {
-        // families optional, continue silently
         console.warn("families load failed", e?.message || e);
       }
     })();
@@ -171,10 +170,7 @@ function ProductPicker({
 
   return (
     <div
-      className={cls(
-        "fixed inset-0 z-50",
-        open ? "pointer-events-auto" : "pointer-events-none"
-      )}
+      className={cls("fixed inset-0 z-50", open ? "pointer-events-auto" : "pointer-events-none")}
       aria-hidden={!open}
     >
       <div
@@ -285,7 +281,7 @@ function MonthlyPreviewPivot({
   function getCell(metric: "revenue" | "cogs" | "gm", idx: number) {
     const r = rows[idx];
     return (r?.[metric] ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    }
+  }
 
   return (
     <div className="overflow-x-auto">
@@ -338,12 +334,37 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
   // showPickerFor: null | "draft" | row.id
   const [showPickerFor, setShowPickerFor] = useState<null | "draft" | number>(null);
 
+  // Product cache (id -> Product) for code/name display
+  const [productCache, setProductCache] = useState<Record<number, Product>>({});
+
   async function load() {
     setLoading(true);
     setErr(null);
     try {
       const data = await apiGet<BOQItem[]>(`/scenarios/${scenarioId}/boq`);
-      setRows(Array.isArray(data) ? data : []);
+      const list = Array.isArray(data) ? data : [];
+      setRows(list);
+
+      // cache'lenmemiş product'ları getir
+      const ids = Array.from(
+        new Set(list.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
+      ).filter((id) => !(id in productCache));
+      if (ids.length > 0) {
+        const fetched: Record<number, Product> = {};
+        await Promise.all(
+          ids.map(async (id) => {
+            try {
+              const p = await apiGet<Product>(`/api/products/${id}`);
+              fetched[id] = p;
+            } catch {
+              /* ignore individual failures */
+            }
+          })
+        );
+        if (Object.keys(fetched).length > 0) {
+          setProductCache((prev) => ({ ...prev, ...fetched }));
+        }
+      }
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e?.message || "Failed to load BOQ.");
     } finally {
@@ -406,6 +427,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         months: draft.months == null ? null : num(draft.months),
       });
       setRows((p) => [...p, created]);
+      // product cache'e ekle
+      if (created.product_id && !(created.product_id in productCache)) {
+        try {
+          const p = await apiGet<Product>(`/api/products/${created.product_id}`);
+          setProductCache((prev) => ({ ...prev, [p.id]: p }));
+        } catch {}
+      }
       setDraft(null);
       onChanged?.();
     } catch (e: any) {
@@ -424,6 +452,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         months: r.months == null ? null : num(r.months),
       });
       setRows((p) => p.map((x) => (x.id === r.id ? upd : x)));
+      // product cache'e ekle
+      if (upd.product_id && !(upd.product_id in productCache)) {
+        try {
+          const p = await apiGet<Product>(`/api/products/${upd.product_id}`);
+          setProductCache((prev) => ({ ...prev, [p.id]: p }));
+        } catch {}
+      }
       onChanged?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Update failed.");
@@ -527,6 +562,24 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     return { rows: rowsOut, totals };
   }, [rows]);
 
+  /* ---------- product helpers ---------- */
+  function productOf(id?: number | null): Product | undefined {
+    if (!id || typeof id !== "number") return undefined;
+    return productCache[id];
+  }
+
+  async function refreshBestPriceForRow(rowId: number) {
+    const row = rows.find((x) => x.id === rowId);
+    if (!row?.product_id) return;
+    try {
+      const price = await apiGet<BestPriceResp>(`/api/products/${row.product_id}/best-price`);
+      const up = Number(price.unit_price);
+      setRows((prev) => prev.map((x) => (x.id === rowId ? { ...x, unit_price: up } : x)));
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || "Best price not found.");
+    }
+  }
+
   /* ---------- product selection handlers ---------- */
   async function applyProductToDraft(p: Product) {
     if (!draft) return;
@@ -534,10 +587,10 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     try {
       const price = await apiGet<BestPriceResp>(`/api/products/${p.id}/best-price`);
       unitPrice = Number(price.unit_price);
-    } catch (e) {
-      // best-price optional; allow continue with base_price or 0
+    } catch {
       unitPrice = p.base_price != null ? Number(p.base_price) : 0;
     }
+    setProductCache((prev) => ({ ...prev, [p.id]: p }));
     setDraft({
       ...draft,
       product_id: p.id,
@@ -553,9 +606,10 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     try {
       const price = await apiGet<BestPriceResp>(`/api/products/${p.id}/best-price`);
       unitPrice = Number(price.unit_price);
-    } catch (e) {
+    } catch {
       unitPrice = p.base_price != null ? Number(p.base_price) : 0;
     }
+    setProductCache((prev) => ({ ...prev, [p.id]: p }));
     setRows((prev) =>
       prev.map((x) =>
         x.id === rowId
@@ -622,9 +676,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       </div>
 
       {err && (
-        <div className="text-sm text-red-600 bg-red-50 border border-red-200 p-2 rounded">
-          {err}
-        </div>
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 p-2 rounded">{err}</div>
       )}
 
       <div className="overflow-x-auto border rounded bg-white">
@@ -645,7 +697,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               <th className="px-3 py-2 text-right">Line Rev</th>
               <th className="px-3 py-2 text-right">Line COGS</th>
               <th className="px-3 py-2 text-right">Line GM</th>
-              <th className="px-3 py-2 w-40">Actions</th>
+              <th className="px-3 py-2 w-48">Actions</th>
             </tr>
           </thead>
 
@@ -683,20 +735,49 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                   </select>
                 </td>
                 <td className="px-3 py-2">
-                  <div className="flex gap-2">
-                    <input
-                      className="w-full px-2 py-1 rounded border border-gray-300"
-                      placeholder="Item"
-                      value={draft.item_name}
-                      onChange={(e) => setDraft({ ...draft, item_name: e.target.value })}
-                    />
-                    <button
-                      className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                      onClick={() => setShowPickerFor("draft")}
-                      title="Pick Product"
-                    >
-                      Pick Product
-                    </button>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex gap-2">
+                      <input
+                        className="w-full px-2 py-1 rounded border border-gray-300"
+                        placeholder="Item"
+                        value={draft.item_name}
+                        onChange={(e) => setDraft({ ...draft, item_name: e.target.value })}
+                      />
+                      <button
+                        className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
+                        onClick={() => setShowPickerFor("draft")}
+                        title="Pick Product"
+                      >
+                        Pick
+                      </button>
+                    </div>
+                    {!!draft.product_id && (
+                      <div className="text-xs text-gray-500">
+                        Linked product:{" "}
+                        <b>
+                          {productOf(draft.product_id)?.code || `#${draft.product_id}`}
+                        </b>{" "}
+                        • {productOf(draft.product_id)?.name || ""}
+                        <button
+                          className="ml-2 px-2 py-0.5 border rounded text-[11px] hover:bg-gray-50"
+                          onClick={async () => {
+                            try {
+                              const bp = await apiGet<BestPriceResp>(
+                                `/api/products/${draft.product_id}/best-price`
+                              );
+                              setDraft((prev) =>
+                                prev ? { ...prev, unit_price: Number(bp.unit_price) } : prev
+                              );
+                            } catch (e: any) {
+                              alert(e?.message || "Best price not found.");
+                            }
+                          }}
+                          title="Refresh best price"
+                        >
+                          Best price ↻
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </td>
                 <td className="px-3 py-2">
@@ -820,6 +901,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               const lineRev = num(r.quantity) * num(r.unit_price);
               const lineCogs = num(r.quantity) * num(r.unit_cogs ?? 0);
               const lineGM = lineRev - lineCogs;
+              const linkedProd = productOf(r.product_id ?? undefined);
 
               return (
                 <tr key={r.id} className="odd:bg-white even:bg-gray-50">
@@ -863,23 +945,40 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     </select>
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex gap-2">
-                      <input
-                        className="w-full px-2 py-1 rounded border border-gray-300"
-                        value={r.item_name}
-                        onChange={(e) =>
-                          setRows((p) =>
-                            p.map((x) => (x.id === r.id ? { ...x, item_name: e.target.value } : x))
-                          )
-                        }
-                      />
-                      <button
-                        className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                        onClick={() => setShowPickerFor(r.id!)}
-                        title="Pick Product"
-                      >
-                        Pick
-                      </button>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex gap-2">
+                        <input
+                          className="w-full px-2 py-1 rounded border border-gray-300"
+                          value={r.item_name}
+                          onChange={(e) =>
+                            setRows((p) =>
+                              p.map((x) => (x.id === r.id ? { ...x, item_name: e.target.value } : x))
+                            )
+                          }
+                        />
+                        <button
+                          className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
+                          onClick={() => setShowPickerFor(r.id!)}
+                          title="Pick Product"
+                        >
+                          Pick
+                        </button>
+                      </div>
+                      {!!r.product_id && (
+                        <div className="text-xs text-gray-500">
+                          Linked product:{" "}
+                          <b>{linkedProd?.code || `#${r.product_id}`}</b>{" "}
+                          • {linkedProd?.name || ""}
+                          <button
+                            className="ml-2 px-2 py-0.5 border rounded text-[11px] hover:bg-gray-50"
+                            onClick={() => refreshBestPriceForRow(r.id!)}
+                            disabled={!r.product_id}
+                            title="Refresh best price"
+                          >
+                            Best price ↻
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2">
@@ -1007,7 +1106,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     {lineGM.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </td>
                   <td className="px-3 py-2">
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <button
                         onClick={() => saveEdit(r)}
                         className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
@@ -1019,6 +1118,14 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                         className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
                       >
                         Delete
+                      </button>
+                      <button
+                        onClick={() => refreshBestPriceForRow(r.id!)}
+                        className="px-2 py-1 rounded border hover:bg-gray-50 text-sm disabled:opacity-50"
+                        disabled={!r.product_id}
+                        title="Refresh best price from price books"
+                      >
+                        Best price ↻
                       </button>
                     </div>
                   </td>

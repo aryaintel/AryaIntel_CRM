@@ -654,8 +654,13 @@ class ScenarioBOQItem(Base):
     start_month = Column(Integer, nullable=True)
     months = Column(Integer, nullable=True)
 
+    # NEW: formulation & escalation policy (mevcut)
     formulation_id = Column(Integer, ForeignKey("product_formulations.id", ondelete="SET NULL"), nullable=True)
     price_escalation_policy_id = Column(Integer, ForeignKey("escalation_policies.id", ondelete="SET NULL"), nullable=True)
+
+    # NEW: Product bağlantısı (migration ile eklediniz)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
+    product = relationship("Product", lazy="selectin")
 
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     notes = Column(Text, nullable=True)
@@ -667,6 +672,7 @@ class ScenarioBOQItem(Base):
     __table_args__ = (
         CheckConstraint("category IN ('bulk_with_freight','bulk_ex_freight','freight')", name="ck_boq_category"),
         Index("ix_boq_scenario", "scenario_id"),
+        Index("ix_boq_product", "product_id"),
     )
 
 
