@@ -1,5 +1,5 @@
 // frontend/src/pages/ProductsPage.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
 import {
   listProductFamilies,
@@ -8,6 +8,7 @@ import {
   getBestPriceForProduct,
   type ProductFamily,
 } from "../lib/apiProducts";
+import { useNavigate } from "react-router-dom";
 
 type Product = {
   id: number;
@@ -33,6 +34,8 @@ type PriceBookEntry = {
 };
 
 export default function ProductsPage() {
+  const nav = useNavigate();
+
   const [rows, setRows] = useState<Product[]>([]);
   const [families, setFamilies] = useState<ProductFamily[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +58,44 @@ export default function ProductsPage() {
     | null
   >(null);
 
+  // ---------- Robust Product Family loader (Tender categories) ----------
+  const loadFamilies = useCallback(async () => {
+    // 1) Primary: helper (likely /api/product-families under the hood)
+    try {
+      const pf = await listProductFamilies({ active: true });
+      const items = (pf.items ?? pf ?? []) as ProductFamily[];
+      if (Array.isArray(items) && items.length) {
+        setFamilies(sortFamilies(items));
+        return;
+      }
+    } catch {
+      /* try fallbacks */
+    }
+    // 2) Fallbacks: common BE shapes
+    const candidates = ["/api/product-families?active=true", "/api/product_families?active=true", "/api/products/families?active=true"];
+    for (const url of candidates) {
+      try {
+        const res: any = await apiGet(url);
+        const items: ProductFamily[] =
+          res?.items ?? res?.data ?? (Array.isArray(res) ? res : []);
+        if (items?.length) {
+          setFamilies(sortFamilies(items));
+          return;
+        }
+      } catch {
+        /* try next */
+      }
+    }
+    // 3) Nothing found → keep empty; saving will allow "None"
+    setFamilies([]);
+  }, []);
+
+  function sortFamilies(list: ProductFamily[]) {
+    return [...list].sort((a, b) =>
+      (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" })
+    );
+  }
+
   // ürünler
   useEffect(() => {
     (async () => {
@@ -71,17 +112,10 @@ export default function ProductsPage() {
     })();
   }, []);
 
-  // product families
+  // product families (Tender categories)
   useEffect(() => {
-    (async () => {
-      try {
-        const pf = await listProductFamilies({ active: true });
-        setFamilies(pf.items ?? []);
-      } catch {
-        /* ignore */
-      }
-    })();
-  }, []);
+    loadFamilies();
+  }, [loadFamilies]);
 
   // pricebooks + best price (seçili ürün & tab pricebooks ise)
   useEffect(() => {
@@ -178,7 +212,7 @@ export default function ProductsPage() {
   }
 
   const familyName = (fid?: number | null) =>
-    fid ? families.find((f) => f.id === fid)?.name ?? `#${fid}` : "-";
+    fid ? families.find((f) => f.id === fid)?.name ?? `#${fid}` : "—";
 
   return (
     <div className="grid grid-cols-12 gap-4">
@@ -190,12 +224,22 @@ export default function ProductsPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <button
-            className="px-3 py-1.5 border rounded"
-            onClick={() => setEditing({ currency: "USD", is_active: true })}
-          >
-            + New
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="px-3 py-1.5 border rounded"
+              onClick={() => setEditing({ currency: "USD", is_active: true })}
+            >
+              + New
+            </button>
+            {/* Define Prices CTA → Price Books */}
+            <button
+              className="px-3 py-1.5 border rounded"
+              onClick={() => nav("/products/price-books")}
+              title="Open Price Books to define product prices"
+            >
+              Define Prices
+            </button>
+          </div>
         </div>
         {loading ? (
           <div>Loading…</div>
@@ -301,7 +345,7 @@ export default function ProductsPage() {
                 />
               </label>
 
-              {/* NEW: Product Family */}
+              {/* Product Family (Tender categories) */}
               <label className="flex flex-col col-span-2">
                 <span>Product Family</span>
                 <select
@@ -322,6 +366,12 @@ export default function ProductsPage() {
                     </option>
                   ))}
                 </select>
+                {/* helper hint if BE has no families yet */}
+                {families.length === 0 && (
+                  <span className="mt-1 text-xs text-gray-500">
+                    No families found. Ensure Tender categories are seeded in the backend (e.g., “Ammonium Nitrate Emulsion”, “Bulk Emulsion”, “ANFO”, “Freight”, etc.).
+                  </span>
+                )}
               </label>
 
               <label className="flex items-center gap-2">

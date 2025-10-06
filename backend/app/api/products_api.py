@@ -1,4 +1,3 @@
-# backend/app/api/products_api.py
 from __future__ import annotations
 
 from typing import Optional, List, Dict, Any
@@ -136,20 +135,38 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
                 valid_from TEXT, -- inclusive
                 valid_to TEXT,   -- inclusive (NULL=open-ended)
                 is_active INTEGER NOT NULL DEFAULT 1,
+                price_term TEXT,
                 FOREIGN KEY(price_book_id) REFERENCES price_books(id) ON DELETE CASCADE,
                 FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
             )
             """
         )
-        # UNIQUE without expressions (max compatibility)
         con.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_pbe_book_prod_window
             ON price_book_entries (price_book_id, product_id, valid_from, valid_to)
             """
         )
+    else:
+        # migration-safe: add price_term if missing
+        if not _column_exists(con, "price_book_entries", "price_term"):
+            con.execute("ALTER TABLE price_book_entries ADD COLUMN price_term TEXT")
 
     con.commit()
+
+
+# --------------------------- Cleaning helpers ---------------------------
+def _clean_name(v: Any) -> str:
+    return (str(v or "")).strip()
+
+def _clean_desc(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+def _to_db_bool(v: Any) -> int:
+    return 1 if bool(v) else 0
 
 
 # ---------------------------------------------------------------------
@@ -172,14 +189,14 @@ def list_product_families(active: Optional[bool] = None) -> Dict[str, Any]:
 @router.post("/product-families")
 @router.post("/product-families/")
 def create_product_family(payload: Dict[str, Any]) -> Dict[str, Any]:
-    name = (payload.get("name") or "").strip()
+    name = _clean_name(payload.get("name"))
     if not name:
         raise HTTPException(422, "Field required: name")
     with cx() as con:
         try:
             cur = con.execute(
                 "INSERT INTO product_families (name, description, is_active) VALUES (?,?,?)",
-                (name, payload.get("description"), 1 if payload.get("is_active", True) else 0),
+                (name, _clean_desc(payload.get("description")), _to_db_bool(payload.get("is_active", True))),
             )
             con.commit()
             return {"id": cur.lastrowid}
@@ -190,15 +207,27 @@ def create_product_family(payload: Dict[str, Any]) -> Dict[str, Any]:
 @router.put("/product-families/{fid}")
 @router.put("/product-families/{fid}/")
 def update_product_family(fid: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-    allowed = ["name", "description", "is_active"]
     sets: List[str] = []
     params: List[Any] = []
-    for k in allowed:
-        if k in payload:
-            sets.append(f"{k} = ?")
-            params.append(1 if payload.get(k) else 0 if k == "is_active" else payload.get(k))
+
+    if "name" in payload:
+        name = _clean_name(payload.get("name"))
+        if not name:
+            raise HTTPException(422, "Field required: name")
+        sets.append("name = ?")
+        params.append(name)
+
+    if "description" in payload:
+        sets.append("description = ?")
+        params.append(_clean_desc(payload.get("description")))
+
+    if "is_active" in payload:
+        sets.append("is_active = ?")
+        params.append(_to_db_bool(payload.get("is_active")))
+
     if not sets:
         return {"updated": 0}
+
     with cx() as con:
         if not con.execute("SELECT 1 FROM product_families WHERE id = ?", (fid,)).fetchone():
             raise HTTPException(404, "Product family not found")
@@ -326,7 +355,19 @@ def create_product(payload: Dict[str, Any]) -> Dict[str, Any]:
         "code", "name", "description", "uom", "currency", "base_price",
         "tax_rate_pct", "barcode_gtin", "is_active", "metadata", "product_family_id",
     ]
-    values = [payload.get(c) if c != "is_active" else (1 if payload.get(c, True) else 0) for c in cols]
+    values = []
+    for c in cols:
+        if c == "is_active":
+            values.append(_to_db_bool(payload.get(c, True)))
+        elif c == "name":
+            nm = _clean_name(payload.get(c))
+            if not nm:
+                raise HTTPException(422, "Field required: name")
+            values.append(nm)
+        elif c == "description":
+            values.append(_clean_desc(payload.get(c)))
+        else:
+            values.append(payload.get(c))
 
     with cx() as con:
         try:
@@ -349,10 +390,26 @@ def update_product(pid: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     ]
     sets: List[str] = []
     params: List[Any] = []
+
     for k in allowed:
-        if k in payload:
+        if k not in payload:
+            continue
+        if k == "is_active":
+            sets.append("is_active = ?")
+            params.append(_to_db_bool(payload.get(k)))
+        elif k == "name":
+            nm = _clean_name(payload.get(k))
+            if not nm:
+                raise HTTPException(422, "Field required: name")
+            sets.append("name = ?")
+            params.append(nm)
+        elif k == "description":
+            sets.append("description = ?")
+            params.append(_clean_desc(payload.get(k)))
+        else:
             sets.append(f"{k} = ?")
-            params.append(1 if payload.get(k) else 0 if k == "is_active" else payload.get(k))
+            params.append(payload.get(k))
+
     if not sets:
         return {"updated": 0}
 
@@ -400,7 +457,7 @@ def list_price_books(active: Optional[bool] = None) -> Dict[str, Any]:
 @router.post("/price-books")
 @router.post("/price-books/")
 def create_price_book(payload: Dict[str, Any]) -> Dict[str, Any]:
-    name = (payload.get("name") or "").strip()
+    name = _clean_name(payload.get("name"))
     if not name:
         raise HTTPException(422, "Field required: name")
     with cx() as con:
@@ -413,8 +470,8 @@ def create_price_book(payload: Dict[str, Any]) -> Dict[str, Any]:
                 (
                     name,
                     payload.get("currency"),
-                    1 if payload.get("is_active", True) else 0,
-                    1 if payload.get("is_default", False) else 0,
+                    _to_db_bool(payload.get("is_active", True)),
+                    _to_db_bool(payload.get("is_default", False)),
                     payload.get("valid_from"),
                     payload.get("valid_to"),
                 ),
@@ -433,18 +490,32 @@ def update_price_book(book_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
     allowed = ["name", "currency", "is_active", "is_default", "valid_from", "valid_to"]
     sets: List[str] = []
     params: List[Any] = []
+
     for k in allowed:
-        if k in payload:
+        if k not in payload:
+            continue
+        if k in ("is_active", "is_default"):
             sets.append(f"{k} = ?")
-            params.append(1 if payload.get(k) else 0 if k in ("is_active","is_default") else payload.get(k))
+            params.append(_to_db_bool(payload.get(k)))
+        elif k == "name":
+            nm = _clean_name(payload.get(k))
+            if not nm:
+                raise HTTPException(422, "Field required: name")
+            sets.append("name = ?")
+            params.append(nm)
+        else:
+            sets.append(f"{k} = ?")
+            params.append(payload.get(k))
+
     if not sets:
         return {"updated": 0}
+
     with cx() as con:
         if not con.execute("SELECT 1 FROM price_books WHERE id = ?", (book_id,)).fetchone():
             raise HTTPException(404, "Price book not found")
         params.append(book_id)
         con.execute(f"UPDATE price_books SET {', '.join(sets)} WHERE id = ?", params)
-        if payload.get("is_default"):
+        if "is_default" in payload and payload.get("is_default"):
             con.execute("UPDATE price_books SET is_default = 0 WHERE id <> ?", (book_id,))
         con.commit()
         return {"updated": 1}
@@ -506,8 +577,8 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
             cur = con.execute(
                 """
                 INSERT INTO price_book_entries
-                (price_book_id, product_id, unit_price, currency, valid_from, valid_to, is_active)
-                VALUES (?,?,?,?,?,?,?)
+                (price_book_id, product_id, unit_price, currency, valid_from, valid_to, is_active, price_term)
+                VALUES (?,?,?,?,?,?,?,?)
                 """,
                 (
                     book_id,
@@ -516,7 +587,8 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
                     payload.get("currency"),
                     payload.get("valid_from"),
                     payload.get("valid_to"),
-                    1 if payload.get("is_active", True) else 0,
+                    _to_db_bool(payload.get("is_active", True)),
+                    payload.get("price_term"),
                 ),
             )
             con.commit()
@@ -528,18 +600,21 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
 @router.put("/price-books/{book_id}/entries/{entry_id}")
 @router.put("/price-books/{book_id}/entries/{entry_id}/")
 def update_price_book_entry(book_id: int, entry_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-    allowed = ["unit_price", "currency", "valid_from", "valid_to", "is_active", "product_id"]
+    allowed = ["unit_price", "currency", "valid_from", "valid_to", "is_active", "product_id", "price_term"]
     sets: List[str] = []
     params: List[Any] = []
     for k in allowed:
-        if k in payload:
+        if k not in payload:
+            continue
+        if k == "unit_price":
+            sets.append("unit_price = ?")
+            params.append(float(payload.get(k)))
+        elif k == "is_active":
+            sets.append("is_active = ?")
+            params.append(_to_db_bool(payload.get(k)))
+        else:
             sets.append(f"{k} = ?")
-            if k == "unit_price":
-                params.append(float(payload.get(k)))
-            elif k == "is_active":
-                params.append(1 if payload.get(k) else 0)
-            else:
-                params.append(payload.get(k))
+            params.append(payload.get(k))
     if not sets:
         return {"updated": 0}
     with cx() as con:
@@ -670,4 +745,5 @@ def best_price_for_product(
             "currency": entry["currency"],
             "valid_from": entry["valid_from"],
             "valid_to": entry["valid_to"],
+            "price_term": entry.get("price_term") if isinstance(entry, dict) else entry["price_term"],
         }

@@ -15,13 +15,19 @@ type BOQItem = {
   scenario_id?: number;
 
   section?: string | null;
+
+  // Legacy commercial category (kept for compatibility – hidden on UI redesign)
   category?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
 
-  // NEW: link to product (nullable)
+  // Persisted product link
   product_id?: number | null;
 
+  // Display fields
   item_name: string;
-  unit: string;
+  unit: string; // UOM
+
+  // Price terms (mapped from product price book entries)
+  price_terms?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
 
   quantity: number | null | undefined;
   unit_price: number | null | undefined;
@@ -37,7 +43,12 @@ type BOQItem = {
   notes?: string | null;
 };
 
-type ProductFamily = { id: number; name: string; is_active?: number; description?: string | null };
+type ProductFamily = {
+  id: number;
+  name: string;
+  is_active?: number;
+  description?: string | null;
+};
 type Product = {
   id: number;
   code: string;
@@ -57,6 +68,8 @@ type BestPriceResp = {
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
+  // opsiyonel; BE göndermiyorsa yok sayılır
+  price_terms?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
 };
 
 /* ---------- Utils ---------- */
@@ -71,12 +84,16 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 function addMonths(y: number, m: number, k: number) {
-  const d0 = new Date(y, m - 1, 1);
+  const d0 = new Date(y, (m || 1) - 1, 1);
   const d1 = new Date(d0.getFullYear(), d0.getMonth() + k, 1);
   return { year: d1.getFullYear(), month: d1.getMonth() + 1 };
 }
 function ymKey(y: number, m: number) {
   return `${y}-${pad2(m)}`;
+}
+function toISODateYYYYMM01(y: number | null | undefined, m: number | null | undefined) {
+  if (!y || !m) return null;
+  return `${y}-${pad2(m)}-01`;
 }
 
 /* HTML5 month input (YYYY-MM) */
@@ -111,7 +128,7 @@ function MonthInput({
   );
 }
 
-const CATEGORY_OPTIONS: Array<BOQItem["category"]> = [
+const PRICE_TERMS_OPTIONS: Array<NonNullable<BOQItem["price_terms"]>> = [
   "bulk_with_freight",
   "bulk_ex_freight",
   "freight",
@@ -122,13 +139,15 @@ function ProductPicker({
   open,
   onClose,
   onPick,
+  familyId,
 }: {
   open: boolean;
   onClose: () => void;
   onPick: (p: Product) => void;
+  familyId?: number | "";
 }) {
   const [families, setFamilies] = useState<ProductFamily[]>([]);
-  const [familyId, setFamilyId] = useState<number | "">("");
+  const [familyFilter, setFamilyFilter] = useState<number | "">("");
   const [q, setQ] = useState("");
   const [items, setItems] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
@@ -146,6 +165,10 @@ function ProductPicker({
     })();
   }, [open]);
 
+  useEffect(() => {
+    if (open) setFamilyFilter(familyId ?? "");
+  }, [open, familyId]);
+
   async function fetchProducts() {
     setLoading(true);
     setErr(null);
@@ -153,7 +176,7 @@ function ProductPicker({
       const params = new URLSearchParams();
       params.set("limit", "1000");
       if (q) params.set("q", q);
-      if (familyId) params.set("family_id", String(familyId));
+      if (familyFilter) params.set("family_id", String(familyFilter));
       const resp = await apiGet<ProductsListResp>(`/api/products?${params.toString()}`);
       setItems(resp.items || []);
     } catch (e: any) {
@@ -187,12 +210,12 @@ function ProductPicker({
         )}
       >
         <div className="px-4 py-3 border-b flex items-center gap-2">
-          <div className="font-semibold">Pick Product</div>
+          <div className="font-semibold">Select Product</div>
           <div className="ml-auto flex gap-2">
             <select
               className="px-2 py-1 rounded border"
-              value={familyId}
-              onChange={(e) => setFamilyId(e.target.value ? Number(e.target.value) : "")}
+              value={familyFilter}
+              onChange={(e) => setFamilyFilter(e.target.value ? Number(e.target.value) : "")}
               title="Product Family"
             >
               <option value="">All Families</option>
@@ -225,36 +248,33 @@ function ProductPicker({
                 <th className="px-3 py-2 text-left">Code</th>
                 <th className="px-3 py-2 text-left">Name</th>
                 <th className="px-3 py-2 text-left">UOM</th>
-                <th className="px-3 py-2 text-left">Family</th>
                 <th className="px-3 py-2 w-28"></th>
               </tr>
             </thead>
             <tbody>
-              {items.map((p) => (
-                <tr key={p.id} className="odd:bg-white even:bg-gray-50">
-                  <td className="px-3 py-2">{p.code}</td>
-                  <td className="px-3 py-2">{p.name}</td>
-                  <td className="px-3 py-2">{p.uom || ""}</td>
-                  <td className="px-3 py-2">
-                    {families.find((f) => f.id === (p.product_family_id || 0))?.name || ""}
-                  </td>
-                  <td className="px-3 py-2">
-                    <button
-                      className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
-                      onClick={() => onPick(p)}
-                    >
-                      Select
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {items.length === 0 && !loading && (
+              {items.length > 0 ? (
+                items.map((p) => (
+                  <tr key={p.id} className="odd:bg-white even:bg-gray-50">
+                    <td className="px-3 py-2">{p.code}</td>
+                    <td className="px-3 py-2">{p.name}</td>
+                    <td className="px-3 py-2">{p.uom || ""}</td>
+                    <td className="px-3 py-2">
+                      <button
+                        className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
+                        onClick={() => onPick(p)}
+                      >
+                        Select
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : !loading ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-gray-500">
+                  <td colSpan={4} className="px-3 py-4 text-center text-gray-500">
                     No products
                   </td>
                 </tr>
-              )}
+              ) : null}
             </tbody>
           </table>
         </div>
@@ -314,8 +334,8 @@ function MonthlyPreviewPivot({
         </tbody>
       </table>
       <div className="px-3 py-2 text-xs text-gray-500">
-        Note: <code>monthly</code> lines spread over the given <b>Duration</b>;
-        <code> once</code>/<code>per_shipment</code>/<code>per_tonne</code> are single-shot.
+        Note: <code>monthly</code> lines spread over the given <b>Duration</b>;{" "}
+        <code>once</code>/<code>per_shipment</code>/<code>per_tonne</code> are single-shot.
       </div>
     </div>
   );
@@ -329,6 +349,23 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+
+  // Families (filter for product picker)
+  const [families, setFamilies] = useState<ProductFamily[]>([]);
+  useEffect(() => {
+    (async () => {
+      try {
+        const fam = await apiGet<FamiliesListResp>("/api/product-families");
+        setFamilies(fam.items || []);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
+
+  // UI-only selected family per row/draft (not persisted)
+  const [draftFamilyId, setDraftFamilyId] = useState<number | "">("");
+  const [rowFamilyId, setRowFamilyId] = useState<Record<number, number | "">>({});
 
   // product picker state
   // showPickerFor: null | "draft" | row.id
@@ -345,7 +382,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       const list = Array.isArray(data) ? data : [];
       setRows(list);
 
-      // cache'lenmemiş product'ları getir
+      // backfill product cache
       const ids = Array.from(
         new Set(list.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
       ).filter((id) => !(id in productCache));
@@ -357,7 +394,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               const p = await apiGet<Product>(`/api/products/${id}`);
               fetched[id] = p;
             } catch {
-              /* ignore individual failures */
+              /* ignore */
             }
           })
         );
@@ -401,6 +438,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       product_id: null,
       item_name: "",
       unit: "",
+      price_terms: "bulk_with_freight",
       quantity: 0,
       unit_price: 0,
       unit_cogs: 0,
@@ -411,9 +449,11 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       is_active: true,
       notes: "",
     });
+    setDraftFamilyId("");
   }
   function cancelAdd() {
     setDraft(null);
+    setDraftFamilyId("");
   }
 
   async function saveNew() {
@@ -427,7 +467,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         months: draft.months == null ? null : num(draft.months),
       });
       setRows((p) => [...p, created]);
-      // product cache'e ekle
       if (created.product_id && !(created.product_id in productCache)) {
         try {
           const p = await apiGet<Product>(`/api/products/${created.product_id}`);
@@ -435,6 +474,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         } catch {}
       }
       setDraft(null);
+      setDraftFamilyId("");
       onChanged?.();
     } catch (e: any) {
       alert(e?.response?.data?.detail || e?.message || "Save failed.");
@@ -452,7 +492,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         months: r.months == null ? null : num(r.months),
       });
       setRows((p) => p.map((x) => (x.id === r.id ? upd : x)));
-      // product cache'e ekle
       if (upd.product_id && !(upd.product_id in productCache)) {
         try {
           const p = await apiGet<Product>(`/api/products/${upd.product_id}`);
@@ -488,7 +527,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     }
   }
 
-  /* ======= Monthly Preview (strict TS uyumlu) ======= */
+  /* ======= Monthly Preview ======= */
   type MonthAgg = { revenue: number; cogs: number; gm: number };
 
   function getOrInit(map: Map<string, MonthAgg>, key: string): MonthAgg {
@@ -568,48 +607,94 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     return productCache[id];
   }
 
+  // Compute lookup window: single-month window based on Start (Y/M)
+  function singleMonthWindow(r: { start_year?: number | null; start_month?: number | null }) {
+    const startISO = toISODateYYYYMM01(r.start_year ?? null, r.start_month ?? null);
+    if (!startISO) return { startISO: null as string | null, endISO: null as string | null };
+    // Tek gün/same month window – BE tek noktada da çalışacak şekilde
+    return { startISO, endISO: startISO };
+  }
+
+  // Try BE `/best-price?start&end`, fallback to legacy `/best-price`
+  async function fetchBestPrice(productId: number, startISO?: string | null, endISO?: string | null) {
+    try {
+      if (startISO && endISO) {
+        const q = new URLSearchParams();
+        q.set("start", startISO);
+        q.set("end", endISO);
+        const resp = await apiGet<BestPriceResp>(`/api/products/${productId}/best-price?${q.toString()}`);
+        return resp;
+      }
+      const resp = await apiGet<BestPriceResp>(`/api/products/${productId}/best-price`);
+      return resp;
+    } catch (e) {
+      throw e;
+    }
+  }
+
+  // Auto-update price for a row after product or start date changes
   async function refreshBestPriceForRow(rowId: number) {
     const row = rows.find((x) => x.id === rowId);
     if (!row?.product_id) return;
     try {
-      const price = await apiGet<BestPriceResp>(`/api/products/${row.product_id}/best-price`);
-      const up = Number(price.unit_price);
-      setRows((prev) => prev.map((x) => (x.id === rowId ? { ...x, unit_price: up } : x)));
+      const { startISO, endISO } = singleMonthWindow(row);
+      const price = await fetchBestPrice(row.product_id, startISO, endISO);
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId
+            ? {
+                ...x,
+                unit_price: Number(price.unit_price),
+                // BE gönderiyorsa price_terms’i de hizala
+                price_terms: price.price_terms ?? x.price_terms ?? null,
+              }
+            : x
+        )
+      );
     } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || "Best price not found.");
+      // Sessiz geç; kullanıcı manuel fiyat girebilir
+      console.warn("best-price failed", e?.message || e);
     }
   }
 
   /* ---------- product selection handlers ---------- */
   async function applyProductToDraft(p: Product) {
     if (!draft) return;
-    let unitPrice = draft.unit_price ?? 0;
-    try {
-      const price = await apiGet<BestPriceResp>(`/api/products/${p.id}/best-price`);
-      unitPrice = Number(price.unit_price);
-    } catch {
-      unitPrice = p.base_price != null ? Number(p.base_price) : 0;
-    }
     setProductCache((prev) => ({ ...prev, [p.id]: p }));
-    setDraft({
+
+    // UOM’i ürün tanımından doldur
+    const nextDraft: BOQItem = {
       ...draft,
       product_id: p.id,
       item_name: p.name,
-      unit: p.uom || draft.unit,
-      unit_price: unitPrice,
-    });
+      unit: p.uom || draft.unit || "",
+    };
+
+    // Start (Y/M) seçilmişse o ay için fiyatı çek
+    let autoPrice: number | null = null;
+    try {
+      const { startISO, endISO } = singleMonthWindow(nextDraft);
+      const price = await fetchBestPrice(p.id, startISO, endISO);
+      autoPrice = Number(price.unit_price);
+      nextDraft.unit_price = autoPrice;
+      if (price.price_terms) nextDraft.price_terms = price.price_terms;
+    } catch {
+      // fallback base_price
+      autoPrice = p.base_price != null ? Number(p.base_price) : 0;
+      nextDraft.unit_price = autoPrice;
+    }
+
+    setDraft(nextDraft);
     setShowPickerFor(null);
   }
 
   async function applyProductToRow(rowId: number, p: Product) {
-    let unitPrice = 0;
-    try {
-      const price = await apiGet<BestPriceResp>(`/api/products/${p.id}/best-price`);
-      unitPrice = Number(price.unit_price);
-    } catch {
-      unitPrice = p.base_price != null ? Number(p.base_price) : 0;
-    }
     setProductCache((prev) => ({ ...prev, [p.id]: p }));
+
+    const current = rows.find((x) => x.id === rowId);
+    if (!current) return;
+
+    // Önce UI’yi güncelle: item_name, UOM
     setRows((prev) =>
       prev.map((x) =>
         x.id === rowId
@@ -617,12 +702,36 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               ...x,
               product_id: p.id,
               item_name: p.name,
-              unit: p.uom || x.unit,
-              unit_price: unitPrice,
+              unit: p.uom || x.unit || "",
             }
           : x
       )
     );
+
+    // Start (Y/M) varsa fiyatı çek
+    try {
+      const { startISO, endISO } = singleMonthWindow(current);
+      const price = await fetchBestPrice(p.id, startISO, endISO);
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId
+            ? {
+                ...x,
+                unit_price: Number(price.unit_price),
+                price_terms: price.price_terms ?? x.price_terms ?? null,
+              }
+            : x
+        )
+      );
+    } catch {
+      // fallback base_price
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId ? { ...x, unit_price: p.base_price != null ? Number(p.base_price) : 0 } : x
+        )
+      );
+    }
+
     setShowPickerFor(null);
   }
 
@@ -683,111 +792,90 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-3 py-2">Section</th>
-              <th className="px-3 py-2">Category</th>
-              <th className="px-3 py-2">Item</th>
-              <th className="px-3 py-2">Unit</th>
-              <th className="px-3 py-2 text-right">Qty</th>
-              <th className="px-3 py-2 text-right">Unit Price</th>
-              <th className="px-3 py-2 text-right">Unit COGS</th>
-              <th className="px-3 py-2">Freq</th>
-              <th className="px-3 py-2 text-right">Duration</th>
-              <th className="px-3 py-2">Start (Y/M)</th>
-              <th className="px-3 py-2">Active</th>
-              <th className="px-3 py-2 text-right">Line Rev</th>
-              <th className="px-3 py-2 text-right">Line COGS</th>
-              <th className="px-3 py-2 text-right">Line GM</th>
+              <th className="px-3 py-2 text-left w-[220px]">Family</th>
+              <th className="px-3 py-2 text-left w-[320px]">Product</th>
+              <th className="px-3 py-2 text-left w-[160px]">Price Terms</th>
+              <th className="px-3 py-2 text-left w-[100px]">UOM</th>
+              <th className="px-3 py-2 text-right w-[90px]">Qty</th>
+              <th className="px-3 py-2 text-right w-[120px]">Unit Price</th>
+              <th className="px-3 py-2 text-right w-[110px]">Unit COGS</th>
+              <th className="px-3 py-2 text-left w-[110px]">Freq</th>
+              <th className="px-3 py-2 text-left w-[140px]">Start (Y/M)</th>
+              <th className="px-3 py-2 text-left w-[120px]">Duration</th>
+              <th className="px-3 py-2 text-center w-[70px]">Active</th>
+              <th className="px-3 py-2 text-right w-[110px]">Line Rev</th>
+              <th className="px-3 py-2 text-right w-[110px]">Line COGS</th>
+              <th className="px-3 py-2 text-right w-[110px]">Line GM</th>
               <th className="px-3 py-2 w-48">Actions</th>
             </tr>
           </thead>
 
           <tbody>
+            {/* ------ DRAFT ROW ------ */}
             {draft && (
               <tr className="bg-amber-50/40">
                 <td className="px-3 py-2">
-                  <input
-                    className="w-full px-2 py-1 rounded border border-gray-300"
-                    placeholder="Section"
-                    value={draft.section ?? ""}
-                    onChange={(e) => setDraft({ ...draft, section: e.target.value })}
-                  />
-                </td>
-                <td className="px-3 py-2">
                   <select
                     className="w-full px-2 py-1 rounded border border-gray-300"
-                    value={draft.category ?? "bulk_with_freight"}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        category: e.target.value as BOQItem["category"],
-                      })
-                    }
+                    value={draftFamilyId}
+                    onChange={(e) => setDraftFamilyId(e.target.value ? Number(e.target.value) : "")}
                   >
-                    {CATEGORY_OPTIONS.map((c) => (
-                      <option key={c || "none"} value={c || "bulk_with_freight"}>
-                        {c === "bulk_with_freight"
-                          ? "Bulk (w/ Freight)"
-                          : c === "bulk_ex_freight"
-                          ? "Bulk (ex Freight)"
-                          : "Freight"}
+                    <option value="">All</option>
+                    {families.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
                       </option>
                     ))}
                   </select>
                 </td>
+
                 <td className="px-3 py-2">
-                  <div className="flex flex-col gap-1">
-                    <div className="flex gap-2">
-                      <input
-                        className="w-full px-2 py-1 rounded border border-gray-300"
-                        placeholder="Item"
-                        value={draft.item_name}
-                        onChange={(e) => setDraft({ ...draft, item_name: e.target.value })}
-                      />
-                      <button
-                        className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                        onClick={() => setShowPickerFor("draft")}
-                        title="Pick Product"
-                      >
-                        Pick
-                      </button>
-                    </div>
-                    {!!draft.product_id && (
-                      <div className="text-xs text-gray-500">
-                        Linked product:{" "}
-                        <b>
-                          {productOf(draft.product_id)?.code || `#${draft.product_id}`}
-                        </b>{" "}
-                        • {productOf(draft.product_id)?.name || ""}
-                        <button
-                          className="ml-2 px-2 py-0.5 border rounded text-[11px] hover:bg-gray-50"
-                          onClick={async () => {
-                            try {
-                              const bp = await apiGet<BestPriceResp>(
-                                `/api/products/${draft.product_id}/best-price`
-                              );
-                              setDraft((prev) =>
-                                prev ? { ...prev, unit_price: Number(bp.unit_price) } : prev
-                              );
-                            } catch (e: any) {
-                              alert(e?.message || "Best price not found.");
-                            }
-                          }}
-                          title="Refresh best price"
-                        >
-                          Best price ↻
-                        </button>
-                      </div>
-                    )}
+                  <div className="flex gap-2">
+                    <input
+                      className="w-full px-2 py-1 rounded border border-gray-300"
+                      placeholder="Product"
+                      value={draft.item_name}
+                      onChange={(e) => setDraft({ ...draft, item_name: e.target.value })}
+                    />
+                    <button
+                      className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
+                      onClick={() => setShowPickerFor("draft")}
+                      title="Select Product"
+                    >
+                      Select
+                    </button>
                   </div>
                 </td>
+
+                <td className="px-3 py-2">
+                  <select
+                    className="w-full px-2 py-1 rounded border border-gray-300"
+                    value={draft.price_terms ?? "bulk_with_freight"}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        price_terms: e.target.value as BOQItem["price_terms"],
+                      })
+                    }
+                  >
+                    {PRICE_TERMS_OPTIONS.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+
                 <td className="px-3 py-2">
                   <input
                     className="w-full px-2 py-1 rounded border border-gray-300"
-                    placeholder="kg"
+                    placeholder="UOM"
                     value={draft.unit}
                     onChange={(e) => setDraft({ ...draft, unit: e.target.value })}
+                    readOnly
                   />
                 </td>
+
                 <td className="px-3 py-2">
                   <input
                     type="number"
@@ -796,6 +884,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     onChange={(e) => setDraft({ ...draft, quantity: Number(e.target.value) })}
                   />
                 </td>
+
                 <td className="px-3 py-2">
                   <input
                     type="number"
@@ -804,6 +893,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     onChange={(e) => setDraft({ ...draft, unit_price: Number(e.target.value) })}
                   />
                 </td>
+
                 <td className="px-3 py-2">
                   <input
                     type="number"
@@ -812,6 +902,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     onChange={(e) => setDraft({ ...draft, unit_cogs: Number(e.target.value) })}
                   />
                 </td>
+
                 <td className="px-3 py-2">
                   <select
                     className="w-full px-2 py-1 rounded border border-gray-300"
@@ -829,6 +920,31 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     <option value="per_tonne">per_tonne</option>
                   </select>
                 </td>
+
+                <td className="px-3 py-2">
+                  <MonthInput
+                    value={{
+                      year: draft.start_year ?? null,
+                      month: draft.start_month ?? null,
+                    }}
+                    onChange={async ({ year, month }) => {
+                      const next = { ...draft, start_year: year, start_month: month };
+                      // Start değiştiğinde fiyatı güncelle (ürün varsa)
+                      if (next.product_id) {
+                        try {
+                          const { startISO, endISO } = singleMonthWindow(next);
+                          const price = await fetchBestPrice(next.product_id!, startISO, endISO);
+                          next.unit_price = Number(price.unit_price);
+                          if (price.price_terms) next.price_terms = price.price_terms;
+                        } catch {
+                          /* sessiz */
+                        }
+                      }
+                      setDraft(next);
+                    }}
+                  />
+                </td>
+
                 <td className="px-3 py-2">
                   <input
                     type="number"
@@ -844,17 +960,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     placeholder="months"
                   />
                 </td>
-                <td className="px-3 py-2">
-                  <MonthInput
-                    value={{
-                      year: draft.start_year ?? null,
-                      month: draft.start_month ?? null,
-                    }}
-                    onChange={({ year, month }) =>
-                      setDraft({ ...draft, start_year: year, start_month: month })
-                    }
-                  />
-                </td>
+
                 <td className="px-3 py-2 text-center">
                   <input
                     type="checkbox"
@@ -862,6 +968,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     onChange={(e) => setDraft({ ...draft, is_active: e.target.checked })}
                   />
                 </td>
+
                 <td className="px-3 py-2 text-right">
                   {(num(draft.quantity) * num(draft.unit_price)).toLocaleString(undefined, {
                     maximumFractionDigits: 2,
@@ -878,6 +985,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     num(draft.quantity) * num(draft.unit_cogs ?? 0)
                   ).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </td>
+
                 <td className="px-3 py-2">
                   <div className="flex gap-2">
                     <button
@@ -897,99 +1005,95 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               </tr>
             )}
 
+            {/* ------ EXISTING ROWS ------ */}
             {rows.map((r) => {
               const lineRev = num(r.quantity) * num(r.unit_price);
               const lineCogs = num(r.quantity) * num(r.unit_cogs ?? 0);
               const lineGM = lineRev - lineCogs;
               const linkedProd = productOf(r.product_id ?? undefined);
+              const famValue = rowFamilyId[r.id!] ?? "";
 
               return (
                 <tr key={r.id} className="odd:bg-white even:bg-gray-50">
-                  <td className="px-3 py-2">
-                    <input
-                      className="w-full px-2 py-1 rounded border border-gray-300"
-                      value={r.section ?? ""}
-                      onChange={(e) =>
-                        setRows((p) =>
-                          p.map((x) => (x.id === r.id ? { ...x, section: e.target.value } : x))
-                        )
-                      }
-                    />
-                  </td>
+                  {/* Family (UI filter only) */}
                   <td className="px-3 py-2">
                     <select
                       className="w-full px-2 py-1 rounded border border-gray-300"
-                      value={r.category ?? "bulk_with_freight"}
+                      value={famValue}
+                      onChange={(e) =>
+                        setRowFamilyId((prev) => ({
+                          ...prev,
+                          [r.id!]: e.target.value ? Number(e.target.value) : "",
+                        }))
+                      }
+                    >
+                      <option value="">All</option>
+                      {families.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+
+                  {/* Product */}
+                  <td className="px-3 py-2">
+                    <div className="flex gap-2">
+                      <input
+                        className="w-full px-2 py-1 rounded border border-gray-300"
+                        value={r.item_name}
+                        onChange={(e) =>
+                          setRows((p) => p.map((x) => (x.id === r.id ? { ...x, item_name: e.target.value } : x)))
+                        }
+                      />
+                      <button
+                        className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
+                        onClick={() => setShowPickerFor(r.id!)}
+                        title="Select Product"
+                      >
+                        Select
+                      </button>
+                    </div>
+                    {!!r.product_id && (
+                      <div className="text-xs text-gray-500">
+                        linked: <b>{linkedProd?.code || `#${r.product_id}`}</b> • {linkedProd?.name || ""}
+                      </div>
+                    )}
+                  </td>
+
+                  {/* Price Terms */}
+                  <td className="px-3 py-2">
+                    <select
+                      className="w-full px-2 py-1 rounded border border-gray-300"
+                      value={r.price_terms ?? "bulk_with_freight"}
                       onChange={(e) =>
                         setRows((p) =>
                           p.map((x) =>
                             x.id === r.id
-                              ? {
-                                  ...x,
-                                  category: e.target.value as BOQItem["category"],
-                                }
+                              ? { ...x, price_terms: e.target.value as BOQItem["price_terms"] }
                               : x
                           )
                         )
                       }
                     >
-                      {CATEGORY_OPTIONS.map((c) => (
-                        <option key={c || "none"} value={c || "bulk_with_freight"}>
-                          {c === "bulk_with_freight"
-                            ? "Bulk (w/ Freight)"
-                            : c === "bulk_ex_freight"
-                            ? "Bulk (ex Freight)"
-                            : "Freight"}
+                      {PRICE_TERMS_OPTIONS.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
                         </option>
                       ))}
                     </select>
                   </td>
-                  <td className="px-3 py-2">
-                    <div className="flex flex-col gap-1">
-                      <div className="flex gap-2">
-                        <input
-                          className="w-full px-2 py-1 rounded border border-gray-300"
-                          value={r.item_name}
-                          onChange={(e) =>
-                            setRows((p) =>
-                              p.map((x) => (x.id === r.id ? { ...x, item_name: e.target.value } : x))
-                            )
-                          }
-                        />
-                        <button
-                          className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                          onClick={() => setShowPickerFor(r.id!)}
-                          title="Pick Product"
-                        >
-                          Pick
-                        </button>
-                      </div>
-                      {!!r.product_id && (
-                        <div className="text-xs text-gray-500">
-                          Linked product:{" "}
-                          <b>{linkedProd?.code || `#${r.product_id}`}</b>{" "}
-                          • {linkedProd?.name || ""}
-                          <button
-                            className="ml-2 px-2 py-0.5 border rounded text-[11px] hover:bg-gray-50"
-                            onClick={() => refreshBestPriceForRow(r.id!)}
-                            disabled={!r.product_id}
-                            title="Refresh best price"
-                          >
-                            Best price ↻
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </td>
+
+                  {/* UOM (read-only; from product) */}
                   <td className="px-3 py-2">
                     <input
                       className="w-full px-2 py-1 rounded border border-gray-300"
                       value={r.unit}
-                      onChange={(e) =>
-                        setRows((p) => p.map((x) => (x.id === r.id ? { ...x, unit: e.target.value } : x)))
-                      }
+                      onChange={() => {}}
+                      readOnly
                     />
                   </td>
+
                   <td className="px-3 py-2">
                     <input
                       type="number"
@@ -1002,6 +1106,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       }
                     />
                   </td>
+
                   <td className="px-3 py-2">
                     <input
                       type="number"
@@ -1014,6 +1119,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       }
                     />
                   </td>
+
                   <td className="px-3 py-2">
                     <input
                       type="number"
@@ -1026,6 +1132,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       }
                     />
                   </td>
+
                   <td className="px-3 py-2">
                     <select
                       className="w-full px-2 py-1 rounded border border-gray-300"
@@ -1049,6 +1156,27 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       <option value="per_tonne">per_tonne</option>
                     </select>
                   </td>
+
+                  {/* Start (Y/M) – değişince fiyatı güncelle */}
+                  <td className="px-3 py-2">
+                    <MonthInput
+                      value={{
+                        year: r.start_year ?? null,
+                        month: r.start_month ?? null,
+                      }}
+                      onChange={async ({ year, month }) => {
+                        setRows((p) =>
+                          p.map((x) =>
+                            x.id === r.id ? { ...x, start_year: year, start_month: month } : x
+                          )
+                        );
+                        if (r.product_id) {
+                          await refreshBestPriceForRow(r.id!);
+                        }
+                      }}
+                    />
+                  </td>
+
                   <td className="px-3 py-2">
                     <input
                       type="number"
@@ -1070,21 +1198,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       placeholder="months"
                     />
                   </td>
-                  <td className="px-3 py-2">
-                    <MonthInput
-                      value={{
-                        year: r.start_year ?? null,
-                        month: r.start_month ?? null,
-                      }}
-                      onChange={({ year, month }) =>
-                        setRows((p) =>
-                          p.map((x) =>
-                            x.id === r.id ? { ...x, start_year: year, start_month: month } : x
-                          )
-                        )
-                      }
-                    />
-                  </td>
+
                   <td className="px-3 py-2 text-center">
                     <input
                       type="checkbox"
@@ -1096,6 +1210,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       }
                     />
                   </td>
+
                   <td className="px-3 py-2 text-right">
                     {lineRev.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </td>
@@ -1105,6 +1220,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                   <td className="px-3 py-2 text-right">
                     {lineGM.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </td>
+
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
                       <button
@@ -1119,14 +1235,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       >
                         Delete
                       </button>
-                      <button
-                        onClick={() => refreshBestPriceForRow(r.id!)}
-                        className="px-2 py-1 rounded border hover:bg-gray-50 text-sm disabled:opacity-50"
-                        disabled={!r.product_id}
-                        title="Refresh best price from price books"
-                      >
-                        Best price ↻
-                      </button>
                     </div>
                   </td>
                 </tr>
@@ -1134,23 +1242,26 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             })}
           </tbody>
 
-          <tfoot>
-            <tr className="bg-gray-100 font-semibold">
-              <td className="px-3 py-2" colSpan={11}>
-                Totals
-              </td>
-              <td className="px-3 py-2 text-right">
-                {totals.rev.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </td>
-              <td className="px-3 py-2 text-right">
-                {totals.cogs.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </td>
-              <td className="px-3 py-2 text-right">
-                {totals.gm.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </td>
-              <td />
-            </tr>
-          </tfoot>
+          {/* Totals – Show Preview kapalıyken gizlemek istediniz, o yüzden sadece preview açıkken göstereceğiz */}
+          {showPreview && (
+            <tfoot>
+              <tr className="bg-gray-100 font-semibold">
+                <td className="px-3 py-2" colSpan={11}>
+                  Totals
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {totals.rev.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {totals.cogs.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </td>
+                <td className="px-3 py-2 text-right">
+                  {(totals.rev - totals.cogs).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </td>
+                <td />
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
@@ -1162,6 +1273,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           if (showPickerFor === "draft") return applyProductToDraft(p);
           if (typeof showPickerFor === "number") return applyProductToRow(showPickerFor, p);
         }}
+        familyId={
+          showPickerFor === "draft"
+            ? draftFamilyId
+            : typeof showPickerFor === "number"
+            ? rowFamilyId[showPickerFor] ?? ""
+            : ""
+        }
       />
 
       {showPreview && (
@@ -1169,7 +1287,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           <div className="px-3 py-2 border-b bg-gray-50 font-medium">
             Preview • Monthly schedule (active items)
           </div>
-          <MonthlyPreviewPivot rows={schedule.rows} totals={schedule.totals} />
+          <MonthlyPreviewPivot rows={schedule.rows} totals={{ revenue: totals.rev, cogs: totals.cogs, gm: totals.rev - totals.cogs }} />
         </div>
       )}
     </div>

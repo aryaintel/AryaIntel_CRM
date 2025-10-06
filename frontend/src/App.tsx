@@ -33,6 +33,10 @@ import ScenarioPage from "./pages/scenario/Scenario";
 
 // NEW: Products
 import ProductsPage from "./pages/ProductsPage";
+// NEW: Price Books
+import PriceBooksPage from "./pages/products/PriceBooksPage";
+// NEW: Product Families
+import ProductFamiliesPage from "./pages/products/ProductFamiliesPage";
 
 // NEW: Debug health page
 import Health from "./pages/debug/Health";
@@ -56,6 +60,9 @@ function usePageTitle() {
   if (pathname.startsWith("/deals")) return "Opportunities";
   if (pathname.startsWith("/business-cases")) return "Business Cases";
   if (pathname.startsWith("/scenarios")) return "Scenario";
+  // More specific must come before the generic "/products"
+  if (pathname.startsWith("/products/price-books")) return "Price Books";
+  if (pathname.startsWith("/products/families")) return "Product Families";
   if (pathname.startsWith("/products")) return "Products";
   if (pathname.startsWith("/boq-console")) return "BOQ Console";
   if (pathname.startsWith("/users")) return "Users";
@@ -144,9 +151,7 @@ export default function App() {
             to="/"
             end
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Dashboard
@@ -154,9 +159,7 @@ export default function App() {
           <NavLink
             to="/accounts"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Accounts
@@ -164,9 +167,7 @@ export default function App() {
           <NavLink
             to="/contacts"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Contacts
@@ -174,9 +175,7 @@ export default function App() {
           <NavLink
             to="/leads"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Leads
@@ -184,9 +183,7 @@ export default function App() {
           <NavLink
             to="/deals"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Opportunities
@@ -196,21 +193,35 @@ export default function App() {
           <NavLink
             to="/products"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             Products
+          </NavLink>
+          {/* NEW: Product Families */}
+          <NavLink
+            to="/products/families"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+            }
+          >
+            Product Families
+          </NavLink>
+          {/* NEW: Price Books */}
+          <NavLink
+            to="/products/price-books"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+            }
+          >
+            Price Books
           </NavLink>
 
           {/* NEW: BOQ Console */}
           <NavLink
             to="/boq-console"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                isActive ? "bg-indigo-100 text-indigo-700" : ""
-              }`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
             }
           >
             BOQ Console
@@ -222,9 +233,7 @@ export default function App() {
               <NavLink
                 to="/users"
                 className={({ isActive }) =>
-                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                    isActive ? "bg-indigo-100 text-indigo-700" : ""
-                  }`
+                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
                 }
               >
                 Users
@@ -232,9 +241,7 @@ export default function App() {
               <NavLink
                 to="/roles"
                 className={({ isActive }) =>
-                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
-                    isActive ? "bg-indigo-100 text-indigo-700" : ""
-                  }`
+                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
                 }
               >
                 Roles
@@ -360,6 +367,26 @@ export default function App() {
               element={
                 <RequireAuth>
                   <ProductsPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Product Families rotası */}
+            <Route
+              path="/products/families"
+              element={
+                <RequireAuth>
+                  <ProductFamiliesPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Price Books rotası */}
+            <Route
+              path="/products/price-books"
+              element={
+                <RequireAuth>
+                  <PriceBooksPage />
                 </RequireAuth>
               }
             />

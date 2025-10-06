@@ -1,4 +1,3 @@
-# backend/app/api/boq_pricing.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -200,6 +199,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
       - elif product_id exists: price = best PriceBook entry on ym
       - else: fallback to stored unit_price on BOQ
     Returns numbers as strings to keep precision consistent.
+    Also returns `price_term` when using a Price Book entry, so FE can auto-fill BOQ's Price Terms.
     """
     y, m = _parse_ym(ym)
     on_date = _ym_to_date(ym)
@@ -212,6 +212,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
         qty = Decimal(str(row["quantity"] or 1))
         currency = "USD"
         source = "boq_unit_price"
+        price_term = None
 
         # 1) formulation based
         if row["formulation_id"] is not None:
@@ -232,6 +233,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
                 "quantity": str(qty),
                 "line_total": str(line_total),
                 "source": "formulation",
+                "price_term": None,
             }
 
         # 2) price book by product_id
@@ -241,6 +243,8 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
                 unit_price = Decimal(str(pbe["unit_price"])).quantize(Decimal("0.01"))
                 currency = (pbe["currency"] or pbe["book_currency"] or "USD")
                 source = "product_price_book"
+                # NEW: pass-through price_term if present on the price book entry
+                price_term = pbe["price_term"] if "price_term" in pbe.keys() else None
             else:
                 unit_price = Decimal(str(row["unit_price"] or 0)).quantize(Decimal("0.01"))
                 source = "boq_unit_price"
@@ -260,6 +264,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
             "quantity": str(qty),
             "line_total": str(line_total),
             "source": source,
+            "price_term": price_term,  # NEW
         }
 
 
@@ -287,6 +292,7 @@ def scenario_bounded_price_preview(
         qty = Decimal(str(row["quantity"] or 1))
         currency = "USD"
         source = "boq_unit_price"
+        price_term = None
 
         # formulation
         if row["formulation_id"] is not None:
@@ -307,6 +313,7 @@ def scenario_bounded_price_preview(
                 "quantity": str(qty),
                 "line_total": str(line_total),
                 "source": "formulation",
+                "price_term": None,
             }
 
         # price book
@@ -316,6 +323,7 @@ def scenario_bounded_price_preview(
                 unit_price = Decimal(str(pbe["unit_price"])).quantize(Decimal("0.01"))
                 currency = (pbe["currency"] or pbe["book_currency"] or "USD")
                 source = "product_price_book"
+                price_term = pbe["price_term"] if "price_term" in pbe.keys() else None
             else:
                 unit_price = Decimal(str(row["unit_price"] or 0)).quantize(Decimal("0.01"))
                 source = "boq_unit_price"
@@ -334,6 +342,7 @@ def scenario_bounded_price_preview(
             "quantity": str(qty),
             "line_total": str(line_total),
             "source": source,
+            "price_term": price_term,  # NEW
         }
 
 
