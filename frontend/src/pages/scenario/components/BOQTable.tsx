@@ -10,6 +10,8 @@ type Props = {
   isReady?: boolean;
 };
 
+type PriceTerm = "bulk_with_freight" | "bulk_ex_freight" | "freight";
+
 type BOQItem = {
   id?: number;
   scenario_id?: number;
@@ -17,7 +19,7 @@ type BOQItem = {
   section?: string | null;
 
   // Legacy commercial category (kept for compatibility – hidden on UI redesign)
-  category?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
+  category?: PriceTerm | null;
 
   // Persisted product link
   product_id?: number | null;
@@ -26,8 +28,8 @@ type BOQItem = {
   item_name: string;
   unit: string; // UOM
 
-  // Price terms (mapped from product price book entries)
-  price_terms?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
+  // Price term snapshot/override stored on BOQ row (BE field is singular)
+  price_term?: PriceTerm | null;
 
   quantity: number | null | undefined;
   unit_price: number | null | undefined;
@@ -68,8 +70,8 @@ type BestPriceResp = {
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
-  // opsiyonel; BE göndermiyorsa yok sayılır
-  price_terms?: "bulk_with_freight" | "bulk_ex_freight" | "freight" | null;
+  // optional; if BE doesn't send, ignore
+  price_term?: PriceTerm | null;
 };
 
 /* ---------- Utils ---------- */
@@ -128,7 +130,7 @@ function MonthInput({
   );
 }
 
-const PRICE_TERMS_OPTIONS: Array<NonNullable<BOQItem["price_terms"]>> = [
+const PRICE_TERMS_OPTIONS: Array<NonNullable<BOQItem["price_term"]>> = [
   "bulk_with_freight",
   "bulk_ex_freight",
   "freight",
@@ -380,11 +382,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     try {
       const data = await apiGet<BOQItem[]>(`/scenarios/${scenarioId}/boq`);
       const list = Array.isArray(data) ? data : [];
-      setRows(list);
+      // Normalize BE that might still send legacy `price_terms`
+      const norm = list.map((r: any) => ({
+        ...r,
+        price_term: r.price_term ?? r.price_terms ?? null,
+      })) as BOQItem[];
+      setRows(norm);
 
       // backfill product cache
       const ids = Array.from(
-        new Set(list.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
+        new Set(norm.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
       ).filter((id) => !(id in productCache));
       if (ids.length > 0) {
         const fetched: Record<number, Product> = {};
@@ -438,7 +445,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       product_id: null,
       item_name: "",
       unit: "",
-      price_terms: "bulk_with_freight",
+      price_term: "bulk_with_freight",
       quantity: 0,
       unit_price: 0,
       unit_cogs: 0,
@@ -466,7 +473,9 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         unit_cogs: draft.unit_cogs == null ? null : num(draft.unit_cogs),
         months: draft.months == null ? null : num(draft.months),
       });
-      setRows((p) => [...p, created]);
+      // Normalize possible legacy echo
+      const createdNorm: BOQItem = { ...created, price_term: (created as any).price_term ?? (created as any).price_terms ?? null };
+      setRows((p) => [...p, createdNorm]);
       if (created.product_id && !(created.product_id in productCache)) {
         try {
           const p = await apiGet<Product>(`/api/products/${created.product_id}`);
@@ -491,7 +500,8 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         unit_cogs: r.unit_cogs == null ? null : num(r.unit_cogs),
         months: r.months == null ? null : num(r.months),
       });
-      setRows((p) => p.map((x) => (x.id === r.id ? upd : x)));
+      const updNorm: BOQItem = { ...upd, price_term: (upd as any).price_term ?? (upd as any).price_terms ?? null };
+      setRows((p) => p.map((x) => (x.id === r.id ? updNorm : x)));
       if (upd.product_id && !(upd.product_id in productCache)) {
         try {
           const p = await apiGet<Product>(`/api/products/${upd.product_id}`);
@@ -611,7 +621,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
   function singleMonthWindow(r: { start_year?: number | null; start_month?: number | null }) {
     const startISO = toISODateYYYYMM01(r.start_year ?? null, r.start_month ?? null);
     if (!startISO) return { startISO: null as string | null, endISO: null as string | null };
-    // Tek gün/same month window – BE tek noktada da çalışacak şekilde
+    // same-month window – BE best-price works with a single date too
     return { startISO, endISO: startISO };
   }
 
@@ -645,14 +655,14 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             ? {
                 ...x,
                 unit_price: Number(price.unit_price),
-                // BE gönderiyorsa price_terms’i de hizala
-                price_terms: price.price_terms ?? x.price_terms ?? null,
+                // sync price_term if BE provides it
+                price_term: price.price_term ?? x.price_term ?? null,
               }
             : x
         )
       );
     } catch (e: any) {
-      // Sessiz geç; kullanıcı manuel fiyat girebilir
+      // silent; user can enter price manually
       console.warn("best-price failed", e?.message || e);
     }
   }
@@ -662,7 +672,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     if (!draft) return;
     setProductCache((prev) => ({ ...prev, [p.id]: p }));
 
-    // UOM’i ürün tanımından doldur
+    // UOM from product
     const nextDraft: BOQItem = {
       ...draft,
       product_id: p.id,
@@ -670,14 +680,14 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       unit: p.uom || draft.unit || "",
     };
 
-    // Start (Y/M) seçilmişse o ay için fiyatı çek
+    // If Start (Y/M) chosen, fetch price for that month
     let autoPrice: number | null = null;
     try {
       const { startISO, endISO } = singleMonthWindow(nextDraft);
       const price = await fetchBestPrice(p.id, startISO, endISO);
       autoPrice = Number(price.unit_price);
       nextDraft.unit_price = autoPrice;
-      if (price.price_terms) nextDraft.price_terms = price.price_terms;
+      if (price.price_term) nextDraft.price_term = price.price_term;
     } catch {
       // fallback base_price
       autoPrice = p.base_price != null ? Number(p.base_price) : 0;
@@ -694,7 +704,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     const current = rows.find((x) => x.id === rowId);
     if (!current) return;
 
-    // Önce UI’yi güncelle: item_name, UOM
+    // Update UI first: item_name, UOM
     setRows((prev) =>
       prev.map((x) =>
         x.id === rowId
@@ -708,7 +718,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       )
     );
 
-    // Start (Y/M) varsa fiyatı çek
+    // If Start (Y/M) exists, fetch price
     try {
       const { startISO, endISO } = singleMonthWindow(current);
       const price = await fetchBestPrice(p.id, startISO, endISO);
@@ -718,7 +728,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             ? {
                 ...x,
                 unit_price: Number(price.unit_price),
-                price_terms: price.price_terms ?? x.price_terms ?? null,
+                price_term: price.price_term ?? x.price_term ?? null,
               }
             : x
         )
@@ -794,7 +804,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             <tr>
               <th className="px-3 py-2 text-left w-[220px]">Family</th>
               <th className="px-3 py-2 text-left w-[320px]">Product</th>
-              <th className="px-3 py-2 text-left w-[160px]">Price Terms</th>
+              <th className="px-3 py-2 text-left w-[160px]">Price Term</th>
               <th className="px-3 py-2 text-left w-[100px]">UOM</th>
               <th className="px-3 py-2 text-right w-[90px]">Qty</th>
               <th className="px-3 py-2 text-right w-[120px]">Unit Price</th>
@@ -850,11 +860,11 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                 <td className="px-3 py-2">
                   <select
                     className="w-full px-2 py-1 rounded border border-gray-300"
-                    value={draft.price_terms ?? "bulk_with_freight"}
+                    value={draft.price_term ?? "bulk_with_freight"}
                     onChange={(e) =>
                       setDraft({
                         ...draft,
-                        price_terms: e.target.value as BOQItem["price_terms"],
+                        price_term: e.target.value as BOQItem["price_term"],
                       })
                     }
                   >
@@ -929,15 +939,15 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     }}
                     onChange={async ({ year, month }) => {
                       const next = { ...draft, start_year: year, start_month: month };
-                      // Start değiştiğinde fiyatı güncelle (ürün varsa)
+                      // Update price if product chosen
                       if (next.product_id) {
                         try {
                           const { startISO, endISO } = singleMonthWindow(next);
                           const price = await fetchBestPrice(next.product_id!, startISO, endISO);
                           next.unit_price = Number(price.unit_price);
-                          if (price.price_terms) next.price_terms = price.price_terms;
+                          if (price.price_term) next.price_term = price.price_term;
                         } catch {
-                          /* sessiz */
+                          /* silent */
                         }
                       }
                       setDraft(next);
@@ -1061,16 +1071,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     )}
                   </td>
 
-                  {/* Price Terms */}
+                  {/* Price Term */}
                   <td className="px-3 py-2">
                     <select
                       className="w-full px-2 py-1 rounded border border-gray-300"
-                      value={r.price_terms ?? "bulk_with_freight"}
+                      value={r.price_term ?? "bulk_with_freight"}
                       onChange={(e) =>
                         setRows((p) =>
                           p.map((x) =>
                             x.id === r.id
-                              ? { ...x, price_terms: e.target.value as BOQItem["price_terms"] }
+                              ? { ...x, price_term: e.target.value as BOQItem["price_term"] }
                               : x
                           )
                         )
@@ -1157,7 +1167,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     </select>
                   </td>
 
-                  {/* Start (Y/M) – değişince fiyatı güncelle */}
+                  {/* Start (Y/M) – update price when changed */}
                   <td className="px-3 py-2">
                     <MonthInput
                       value={{
@@ -1242,7 +1252,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             })}
           </tbody>
 
-          {/* Totals – Show Preview kapalıyken gizlemek istediniz, o yüzden sadece preview açıkken göstereceğiz */}
           {showPreview && (
             <tfoot>
               <tr className="bg-gray-100 font-semibold">
@@ -1287,7 +1296,10 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           <div className="px-3 py-2 border-b bg-gray-50 font-medium">
             Preview • Monthly schedule (active items)
           </div>
-          <MonthlyPreviewPivot rows={schedule.rows} totals={{ revenue: totals.rev, cogs: totals.cogs, gm: totals.rev - totals.cogs }} />
+          <MonthlyPreviewPivot
+            rows={schedule.rows}
+            totals={{ revenue: totals.rev, cogs: totals.cogs, gm: totals.rev - totals.cogs }}
+          />
         </div>
       )}
     </div>
