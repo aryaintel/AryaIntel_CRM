@@ -400,12 +400,13 @@ def list_boq_items_for_scenario(
 ):
     """
     Belirli senaryoya ait BOQ satırlarını listeler.
+    NOTE: includes `price_term` snapshot so FE can render frozen value after save.
     """
     base_sql = """
         SELECT id, scenario_id, section, category, item_name, unit,
                quantity, unit_price, unit_cogs, frequency, months,
                start_year, start_month, is_active,
-               formulation_id, product_id
+               formulation_id, product_id, price_term
         FROM scenario_boq_items
         WHERE scenario_id = ?
     """

@@ -28,6 +28,10 @@ type PriceBookEntry = {
   is_active: boolean;
   product_code?: string | null;
   product_name?: string | null;
+
+  // NEW: price term fields
+  price_term_id?: number | null;
+  price_term?: string | null; // code (read-only for display)
 };
 
 type ProductLite = {
@@ -39,6 +43,9 @@ type ProductLite = {
 };
 
 type ProductFamily = { id: number; name: string };
+
+// NEW: Price term option
+type PriceTermOpt = { id: number; code: string; name?: string | null; is_active?: boolean | number };
 
 // ---------- Small utils ----------
 function toBool(x: any): boolean {
@@ -121,6 +128,7 @@ export default function PriceBooksPage() {
     valid_from: null,
     valid_to: null,
     is_active: true,
+    price_term_id: null, // NEW
   });
 
   // Families & product search
@@ -130,6 +138,9 @@ export default function PriceBooksPage() {
   const [productQuery, setProductQuery] = useState<string>("");
   const [productOptions, setProductOptions] = useState<ProductLite[]>([]);
   const [prodBusy, setProdBusy] = useState<boolean>(false);
+
+  // Price terms (reference)
+  const [priceTerms, setPriceTerms] = useState<PriceTermOpt[]>([]);
 
   // dropdown/focus management for Product
   const [showProdDropdown, setShowProdDropdown] = useState<boolean>(false);
@@ -183,11 +194,25 @@ export default function PriceBooksPage() {
     })();
   }, []);
 
+  // Load price term options (active-only endpoint)
+  useEffect(() => {
+    (async () => {
+      try {
+        const res =
+          (await apiGet("/api/price-terms/options")) ??
+          (await apiGet("/api/price_terms/options"));
+        setPriceTerms(unwrapList<PriceTermOpt>(res));
+      } catch {
+        setPriceTerms([]);
+      }
+    })();
+  }, []);
+
   // Reset the "Add Price" form visibility when switching books
   useEffect(() => {
     setShowAddEntry(false);
     setEntryFamilyId("");
-    setEntryDraft((d) => ({ ...d, product_id: 0 }));
+    setEntryDraft((d) => ({ ...d, product_id: 0, price_term_id: null }));
     setProductQuery("");
     setProductOptions([]);
     setShowProdDropdown(false);
@@ -224,6 +249,9 @@ export default function PriceBooksPage() {
       is_active: toBool(e.is_active),
       product_code: e.product_code ?? e.productCode ?? null,
       product_name: e.product_name ?? e.productName ?? null,
+      // NEW:
+      price_term_id: e.price_term_id ?? e.priceTermId ?? null,
+      price_term: e.price_term ?? e.priceTerm ?? null,
     };
   }
 
@@ -308,7 +336,13 @@ export default function PriceBooksPage() {
     if (!entryDraft.product_id) { alert("Please choose a product."); return; }
     setBusy("create-entry"); setErr(null);
     try {
-      const body = { ...entryDraft, price_book_id: selected.id, is_active: entryDraft.is_active ? 1 : 0 };
+      const body = {
+        ...entryDraft,
+        price_book_id: selected.id,
+        is_active: entryDraft.is_active ? 1 : 0,
+        // ensure only id is sent (code is derived on server)
+        price_term: undefined,
+      };
       const candidates = [
         { url: `${booksBase}/${selected.id}/entries`, body },
         { url: `/api/price-book-entries`, body },
@@ -317,7 +351,15 @@ export default function PriceBooksPage() {
       await tryPost(candidates);
       await loadEntries(selected.id, booksBase);
       // Reset form but keep the panel open so user can add multiple
-      setEntryDraft({ product_id: 0, unit_price: 0, currency: selected.currency ?? "", valid_from: null, valid_to: null, is_active: true });
+      setEntryDraft({
+        product_id: 0,
+        unit_price: 0,
+        currency: selected.currency ?? "",
+        valid_from: null,
+        valid_to: null,
+        is_active: true,
+        price_term_id: null,
+      });
       setProductQuery(""); setProductOptions([]); setShowProdDropdown(false); setProdFocused(false);
     } catch (e: any) {
       setErr(e?.message || String(e));
@@ -327,7 +369,12 @@ export default function PriceBooksPage() {
     if (!selected || !selected.id || !booksBase || !row.id) return;
     setBusy(`update-entry-${row.id}`); setErr(null);
     try {
-      const body = { ...row, is_active: row.is_active ? 1 : 0, price_book_id: selected.id };
+      const body = {
+        ...row,
+        is_active: row.is_active ? 1 : 0,
+        price_book_id: selected.id,
+        price_term: undefined, // do not send code on update
+      };
       const candidates = [
         { url: `${booksBase}/${selected.id}/entries/${row.id}`, body },
         { url: `${entriesFlatBase ?? "/api/price-book-entries"}/${row.id}`, body },
@@ -763,6 +810,25 @@ export default function PriceBooksPage() {
                         />
                       </div>
 
+                      {/* Price Term (2) NEW */}
+                      <div className="md:col-span-2">
+                        <label className="block text-xs text-gray-600 mb-1">Price Term</label>
+                        <select
+                          className="w-full rounded-lg border px-3 py-2 text-sm"
+                          value={entryDraft.price_term_id ?? ""}
+                          onChange={(e) =>
+                            setEntryDraft({ ...entryDraft, price_term_id: e.target.value ? Number(e.target.value) : null })
+                          }
+                        >
+                          <option value="">— none —</option>
+                          {priceTerms.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.code}{t.name ? ` — ${t.name}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
                       {/* Valid From (1) */}
                       <div className="md:col-span-1">
                         <label className="block text-xs text-gray-600 mb-1">Valid From</label>
@@ -819,6 +885,7 @@ export default function PriceBooksPage() {
                         <th className="px-3 py-2 font-medium">Product</th>
                         <th className="px-3 py-2 font-medium">Unit Price</th>
                         <th className="px-3 py-2 font-medium">Currency</th>
+                        <th className="px-3 py-2 font-medium">Price Term</th>
                         <th className="px-3 py-2 font-medium">Valid From</th>
                         <th className="px-3 py-2 font-medium">Valid To</th>
                         <th className="px-3 py-2 font-medium">Active</th>
@@ -827,10 +894,16 @@ export default function PriceBooksPage() {
                     </thead>
                     <tbody className="divide-y">
                       {entries.length === 0 ? (
-                        <tr><td className="px-3 py-3 text-gray-600" colSpan={7}>No entries yet.</td></tr>
+                        <tr><td className="px-3 py-3 text-gray-600" colSpan={8}>No entries yet.</td></tr>
                       ) : (
                         entries.map((row) => (
-                          <EntryRow key={row.id} row={row} onSave={updateEntry} onDelete={deleteEntry} />
+                          <EntryRow
+                            key={row.id}
+                            row={row}
+                            priceTerms={priceTerms}
+                            onSave={updateEntry}
+                            onDelete={deleteEntry}
+                          />
                         ))
                       )}
                     </tbody>
@@ -849,11 +922,12 @@ export default function PriceBooksPage() {
 
 // ---------- Row component ----------
 function EntryRow({
-  row, onSave, onDelete,
+  row, onSave, onDelete, priceTerms,
 }: {
   row: PriceBookEntry;
   onSave: (row: PriceBookEntry) => void;
   onDelete: (row: PriceBookEntry) => void;
+  priceTerms: PriceTermOpt[];
 }) {
   const [edit, setEdit] = useState<PriceBookEntry>({ ...row });
   useEffect(() => setEdit({ ...row }), [row]);
@@ -878,6 +952,25 @@ function EntryRow({
           value={edit.currency ?? ""}
           onChange={(e) => setEdit({ ...edit, currency: e.target.value })}
         />
+      </td>
+      {/* NEW: price term select */}
+      <td className="px-3 py-2">
+        <select
+          className="w-44 rounded-lg border px-3 py-2 text-sm"
+          value={edit.price_term_id ?? ""}
+          onChange={(e) =>
+            setEdit({ ...edit, price_term_id: e.target.value ? Number(e.target.value) : null })
+          }
+        >
+          <option value="">
+            {row.price_term ? `(${row.price_term})` : "— none —"}
+          </option>
+          {priceTerms.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.code}{t.name ? ` — ${t.name}` : ""}
+            </option>
+          ))}
+        </select>
       </td>
       <td className="px-3 py-2">
         <input

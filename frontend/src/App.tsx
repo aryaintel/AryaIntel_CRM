@@ -25,6 +25,7 @@ import OpportunityDetailPage from "./pages/OpportunityDetail";
 import LeadsPage from "./pages/Leads";
 import LoginPage from "./pages/Login";
 import LeadDetailPage from "./pages/LeadDetail";
+import PriceTermsPage from "./pages/products/PriceTermsPage"; // NEW
 
 // NEW
 import BusinessCasePage from "./pages/BusinessCase";
@@ -62,6 +63,7 @@ function usePageTitle() {
   if (pathname.startsWith("/scenarios")) return "Scenario";
   // More specific must come before the generic "/products"
   if (pathname.startsWith("/products/price-books")) return "Price Books";
+  if (pathname.startsWith("/products/price-terms")) return "Price Terms"; // NEW
   if (pathname.startsWith("/products/families")) return "Product Families";
   if (pathname.startsWith("/products")) return "Products";
   if (pathname.startsWith("/boq-console")) return "BOQ Console";
@@ -151,7 +153,9 @@ export default function App() {
             to="/"
             end
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Dashboard
@@ -159,7 +163,9 @@ export default function App() {
           <NavLink
             to="/accounts"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Accounts
@@ -167,7 +173,9 @@ export default function App() {
           <NavLink
             to="/contacts"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Contacts
@@ -175,7 +183,9 @@ export default function App() {
           <NavLink
             to="/leads"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Leads
@@ -183,7 +193,9 @@ export default function App() {
           <NavLink
             to="/deals"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Opportunities
@@ -193,7 +205,9 @@ export default function App() {
           <NavLink
             to="/products"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Products
@@ -202,7 +216,9 @@ export default function App() {
           <NavLink
             to="/products/families"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Product Families
@@ -211,17 +227,32 @@ export default function App() {
           <NavLink
             to="/products/price-books"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             Price Books
+          </NavLink>
+          {/* NEW: Price Terms */}
+          <NavLink
+            to="/products/price-terms"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
+            }
+          >
+            Price Terms
           </NavLink>
 
           {/* NEW: BOQ Console */}
           <NavLink
             to="/boq-console"
             className={({ isActive }) =>
-              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
             }
           >
             BOQ Console
@@ -233,7 +264,9 @@ export default function App() {
               <NavLink
                 to="/users"
                 className={({ isActive }) =>
-                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                    isActive ? "bg-indigo-100 text-indigo-700" : ""
+                  }`
                 }
               >
                 Users
@@ -241,7 +274,9 @@ export default function App() {
               <NavLink
                 to="/roles"
                 className={({ isActive }) =>
-                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${isActive ? "bg-indigo-100 text-indigo-700" : ""}`
+                  `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                    isActive ? "bg-indigo-100 text-indigo-700" : ""
+                  }`
                 }
               >
                 Roles
@@ -264,7 +299,10 @@ export default function App() {
                 Logout
               </button>
             ) : (
-              <NavLink to="/login" className="px-2 py-1 rounded border hover:bg-gray-50">
+              <NavLink
+                to="/login"
+                className="px-2 py-1 rounded border hover:bg-gray-50"
+              >
                 Login
               </NavLink>
             )}
@@ -387,6 +425,16 @@ export default function App() {
               element={
                 <RequireAuth>
                   <PriceBooksPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Price Terms rotası */}
+            <Route
+              path="/products/price-terms"
+              element={
+                <RequireAuth>
+                  <PriceTermsPage />
                 </RequireAuth>
               }
             />

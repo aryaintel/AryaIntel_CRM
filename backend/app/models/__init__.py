@@ -658,9 +658,12 @@ class ScenarioBOQItem(Base):
     formulation_id = Column(Integer, ForeignKey("product_formulations.id", ondelete="SET NULL"), nullable=True)
     price_escalation_policy_id = Column(Integer, ForeignKey("escalation_policies.id", ondelete="SET NULL"), nullable=True)
 
-    # NEW: Product bağlantısı (migration ile eklediniz)
+    # NEW: Product bağlantısı
     product_id = Column(Integer, ForeignKey("products.id", ondelete="SET NULL"), nullable=True)
     product = relationship("Product", lazy="selectin")
+
+    # NEW: Price Term snapshot (UI’nin kaydettiği değer)
+    price_term = Column(String, nullable=True)
 
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     notes = Column(Text, nullable=True)

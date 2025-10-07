@@ -1,5 +1,5 @@
 // frontend/src/pages/scenario/components/BOQTable.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../../../lib/api";
 
 /* ---------- Types ---------- */
@@ -17,18 +17,13 @@ type BOQItem = {
   scenario_id?: number;
 
   section?: string | null;
-
-  // Legacy commercial category (kept for compatibility – hidden on UI redesign)
   category?: PriceTerm | null;
 
-  // Persisted product link
   product_id?: number | null;
 
-  // Display fields
   item_name: string;
   unit: string; // UOM
 
-  // Price term snapshot/override stored on BOQ row (BE field is singular)
   price_term?: PriceTerm | null;
 
   quantity: number | null | undefined;
@@ -70,8 +65,7 @@ type BestPriceResp = {
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
-  // optional; if BE doesn't send, ignore
-  price_term?: PriceTerm | null;
+  price_term?: PriceTerm | null; // backend should return this
 };
 
 /* ---------- Utils ---------- */
@@ -98,6 +92,46 @@ function toISODateYYYYMM01(y: number | null | undefined, m: number | null | unde
   return `${y}-${pad2(m)}-01`;
 }
 
+/* ---------- Reusable Inputs ---------- */
+function NumberInput({
+  value,
+  onChange,
+  className,
+  min,
+  step = "any",
+  placeholder,
+  title,
+  width = "w-full",
+}: {
+  value: number | string | null | undefined;
+  onChange: (n: number) => void;
+  className?: string;
+  min?: number;
+  step?: number | "any";
+  placeholder?: string;
+  title?: string;
+  width?: string;
+}) {
+  return (
+    <input
+      type="number"
+      inputMode="decimal"
+      step={step}
+      min={min}
+      value={value ?? ""}
+      onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+      onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
+      className={cls(
+        "px-2 py-1 rounded border border-gray-300 text-right font-mono tabular-nums",
+        width,
+        className
+      )}
+      placeholder={placeholder}
+      title={title ?? String(value ?? "")}
+    />
+  );
+}
+
 /* HTML5 month input (YYYY-MM) */
 function MonthInput({
   value,
@@ -114,7 +148,7 @@ function MonthInput({
       type="month"
       value={str}
       onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-        const v = e.target.value; // "YYYY-MM" | ""
+        const v = e.target.value;
         if (!v) return onChange({ year: null, month: null });
         const [y, m] = v.split("-").map((t) => Number(t));
         onChange({
@@ -126,7 +160,48 @@ function MonthInput({
         "w-full px-2 py-1 rounded border border-gray-300 focus:outline-none focus:ring",
         className
       )}
+      title={str || ""}
     />
+  );
+}
+
+/* ---------- Family ---------- */
+function FamilySelect({
+  value,
+  families,
+  onChange,
+  className,
+  placeholder = "Select family…",
+  disabled = false,
+}: {
+  value: number | "" | undefined;
+  families: ProductFamily[];
+  onChange: (next: number | "") => void;
+  className?: string;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      value={value === "" ? "" : String(value ?? "")}
+      onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
+      className={cls(
+        "w-full px-2 py-1.5 rounded border border-gray-300 text-sm",
+        disabled ? "bg-gray-100 text-gray-500 cursor-not-allowed" : "",
+        className
+      )}
+      disabled={disabled}
+      title="Product Family"
+    >
+      <option value="">{placeholder}</option>
+      {families
+        .filter((f) => f.is_active !== 0)
+        .map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+    </select>
   );
 }
 
@@ -136,156 +211,144 @@ const PRICE_TERMS_OPTIONS: Array<NonNullable<BOQItem["price_term"]>> = [
   "freight",
 ];
 
-/* ---------- Lightweight Product Picker (inline modal) ---------- */
-function ProductPicker({
-  open,
-  onClose,
-  onPick,
+/* ---------- Product Autocomplete ---------- */
+function useDebounced<T>(value: T, delay = 250) {
+  const [v, setV] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return v;
+}
+
+function ProductAutocomplete({
   familyId,
+  disabled,
+  value,
+  onChangeText,
+  onPick,
+  placeholder = "Search product…",
 }: {
-  open: boolean;
-  onClose: () => void;
+  familyId: number | "" | undefined;
+  disabled?: boolean;
+  value: string;
+  onChangeText: (t: string) => void;
   onPick: (p: Product) => void;
-  familyId?: number | "";
+  placeholder?: string;
 }) {
-  const [families, setFamilies] = useState<ProductFamily[]>([]);
-  const [familyFilter, setFamilyFilter] = useState<number | "">("");
-  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Product[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState(0);
+  const debouncedQ = useDebounced(value, 250);
+  const boxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
-    (async () => {
-      try {
-        const fam = await apiGet<FamiliesListResp>("/api/product-families");
-        setFamilies(fam.items || []);
-      } catch (e: any) {
-        console.warn("families load failed", e?.message || e);
-      }
-    })();
-  }, [open]);
-
-  useEffect(() => {
-    if (open) setFamilyFilter(familyId ?? "");
-  }, [open, familyId]);
-
-  async function fetchProducts() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const params = new URLSearchParams();
-      params.set("limit", "1000");
-      if (q) params.set("q", q);
-      if (familyFilter) params.set("family_id", String(familyFilter));
-      const resp = await apiGet<ProductsListResp>(`/api/products?${params.toString()}`);
-      setItems(resp.items || []);
-    } catch (e: any) {
-      setErr(e?.response?.data?.detail || e?.message || "Failed to load products.");
-    } finally {
-      setLoading(false);
+    function onDocClick(e: MouseEvent) {
+      if (!boxRef.current) return;
+      if (!boxRef.current.contains(e.target as Node)) setOpen(false);
     }
-  }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
 
   useEffect(() => {
-    if (open) fetchProducts();
+    async function run() {
+      if (!open) return;
+      if (!debouncedQ || debouncedQ.trim().length < 2) {
+        setItems([]);
+        return;
+      }
+      setLoading(true);
+      setErr(null);
+      try {
+        const params = new URLSearchParams();
+        params.set("limit", "20");
+        params.set("q", debouncedQ.trim());
+        if (familyId) params.set("family_id", String(familyId));
+        const resp = await apiGet<ProductsListResp>(`/api/products?${params.toString()}`);
+        setItems(resp.items || []);
+        setHighlight(0);
+      } catch (e: any) {
+        setErr(e?.response?.data?.detail || e?.message || "Failed to load products.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [debouncedQ, open, familyId]);
 
   return (
-    <div
-      className={cls("fixed inset-0 z-50", open ? "pointer-events-auto" : "pointer-events-none")}
-      aria-hidden={!open}
-    >
-      <div
+    <div className="relative" ref={boxRef}>
+      <input
         className={cls(
-          "absolute inset-0 bg-black/30 transition-opacity",
-          open ? "opacity-100" : "opacity-0"
+          "w-full px-2 py-1 rounded border border-gray-300",
+          disabled && "bg-gray-100 text-gray-500"
         )}
-        onClick={onClose}
+        placeholder={disabled ? "Select a family first" : placeholder}
+        value={value}
+        onChange={(e) => onChangeText(e.target.value)}
+        onFocus={() => setOpen(true)}
+        disabled={disabled}
+        onKeyDown={(e) => {
+          if (!open) return;
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHighlight((h) => Math.min(h + 1, Math.max(0, items.length - 1)));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHighlight((h) => Math.max(0, h - 1));
+          } else if (e.key === "Enter") {
+            if (items[highlight]) {
+              onPick(items[highlight]);
+              setOpen(false);
+            }
+          } else if (e.key === "Escape") {
+            setOpen(false);
+            (e.target as HTMLInputElement).blur();
+          }
+        }}
       />
-      <div
-        className={cls(
-          "absolute left-1/2 top-12 -translate-x-1/2 w-[720px] max-w-[95vw] bg-white rounded-xl shadow-xl border",
-          open ? "opacity-100" : "opacity-0"
-        )}
-      >
-        <div className="px-4 py-3 border-b flex items-center gap-2">
-          <div className="font-semibold">Select Product</div>
-          <div className="ml-auto flex gap-2">
-            <select
-              className="px-2 py-1 rounded border"
-              value={familyFilter}
-              onChange={(e) => setFamilyFilter(e.target.value ? Number(e.target.value) : "")}
-              title="Product Family"
-            >
-              <option value="">All Families</option>
-              {families.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-            </select>
-            <input
-              className="px-2 py-1 rounded border w-56"
-              placeholder="Search code/name…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && fetchProducts()}
-            />
-            <button className="px-3 py-1.5 rounded border" onClick={fetchProducts} disabled={loading}>
-              Search
-            </button>
-            <button className="px-3 py-1.5 rounded border" onClick={onClose}>
-              Close
-            </button>
-          </div>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full rounded-md border bg-white shadow-lg max-h-64 overflow-auto">
+          {err && <div className="px-3 py-2 text-sm text-red-600">{err}</div>}
+          {loading && <div className="px-3 py-2 text-sm text-gray-500">Searching…</div>}
+          {!loading && !err && items.length === 0 && debouncedQ.trim().length >= 2 && (
+            <div className="px-3 py-2 text-sm text-gray-500">No results</div>
+          )}
+          {!loading &&
+            items.map((p, i) => (
+              <div
+                key={p.id}
+                className={cls(
+                  "px-3 py-2 text-sm cursor-pointer flex items-center gap-2",
+                  i === highlight ? "bg-indigo-50" : "hover:bg-gray-50"
+                )}
+                onMouseEnter={() => setHighlight(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onPick(p);
+                  setOpen(false);
+                }}
+                title={p.name}
+              >
+                <div className="min-w-[84px] font-mono text-xs text-gray-600">{p.code}</div>
+                <div className="flex-1">{p.name}</div>
+                <div className="text-xs text-gray-500">{p.uom || ""}</div>
+              </div>
+            ))}
+          {!loading && debouncedQ.trim().length < 2 && (
+            <div className="px-3 py-2 text-sm text-gray-500">Type at least 2 characters…</div>
+          )}
         </div>
-        {err && <div className="px-4 py-2 text-sm text-red-600">{err}</div>}
-        <div className="max-h-[60vh] overflow-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-3 py-2 text-left">Code</th>
-                <th className="px-3 py-2 text-left">Name</th>
-                <th className="px-3 py-2 text-left">UOM</th>
-                <th className="px-3 py-2 w-28"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.length > 0 ? (
-                items.map((p) => (
-                  <tr key={p.id} className="odd:bg-white even:bg-gray-50">
-                    <td className="px-3 py-2">{p.code}</td>
-                    <td className="px-3 py-2">{p.name}</td>
-                    <td className="px-3 py-2">{p.uom || ""}</td>
-                    <td className="px-3 py-2">
-                      <button
-                        className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
-                        onClick={() => onPick(p)}
-                      >
-                        Select
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              ) : !loading ? (
-                <tr>
-                  <td colSpan={4} className="px-3 py-4 text-center text-gray-500">
-                    No products
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-/* ---------- Pivot Preview Component ---------- */
+/* ---------- Pivot Preview ---------- */
 function MonthlyPreviewPivot({
   rows,
   totals,
@@ -343,6 +406,53 @@ function MonthlyPreviewPivot({
   );
 }
 
+/* ====== Resizable columns ====== */
+type ColKey =
+  | "family"
+  | "product"
+  | "price_term"
+  | "uom"
+  | "qty"
+  | "unit_price"
+  | "unit_cogs"
+  | "freq"
+  | "start"
+  | "duration"
+  | "active"
+  | "actions";
+
+const DEFAULT_COL_WIDTHS: Record<ColKey, number> = {
+  family: 220,
+  product: 360,
+  price_term: 160,
+  uom: 110,
+  qty: 110,
+  unit_price: 150,
+  unit_cogs: 150,
+  freq: 120,
+  start: 170,
+  duration: 120,
+  active: 80,
+  actions: 200,
+};
+
+const COL_LABELS: Record<ColKey, string> = {
+  family: "Family",
+  product: "Product",
+  price_term: "Price Term",
+  uom: "UOM",
+  qty: "Qty",
+  unit_price: "Unit Price",
+  unit_cogs: "Unit COGS",
+  freq: "Freq",
+  start: "Start (Y/M)",
+  duration: "Duration",
+  active: "Active",
+  actions: "Actions",
+};
+
+const STORAGE_KEY = "boq_col_widths_v1";
+
 /* ========================================================= */
 
 export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady }: Props) {
@@ -352,7 +462,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
   const [err, setErr] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
 
-  // Families (filter for product picker)
+  // Families
   const [families, setFamilies] = useState<ProductFamily[]>([]);
   useEffect(() => {
     (async () => {
@@ -365,16 +475,58 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     })();
   }, []);
 
-  // UI-only selected family per row/draft (not persisted)
+  // UI family per row/draft
   const [draftFamilyId, setDraftFamilyId] = useState<number | "">("");
   const [rowFamilyId, setRowFamilyId] = useState<Record<number, number | "">>({});
 
-  // product picker state
-  // showPickerFor: null | "draft" | row.id
-  const [showPickerFor, setShowPickerFor] = useState<null | "draft" | number>(null);
-
-  // Product cache (id -> Product) for code/name display
+  // Product cache for linked display
   const [productCache, setProductCache] = useState<Record<number, Product>>({});
+
+  // Column widths (resizable, persisted)
+  const [colWidths, setColWidths] = useState<Record<ColKey, number>>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return { ...DEFAULT_COL_WIDTHS, ...parsed };
+      }
+    } catch {}
+    return DEFAULT_COL_WIDTHS;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(colWidths));
+    } catch {}
+  }, [colWidths]);
+
+  const startResizingRef = useRef<{ key: ColKey; startX: number; startW: number } | null>(null);
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const st = startResizingRef.current;
+      if (!st) return;
+      const dx = e.clientX - st.startX;
+      setColWidths((prev) => {
+        const w = Math.max(80, st.startW + dx);
+        return { ...prev, [st.key]: w };
+      });
+    }
+    function onUp() {
+      startResizingRef.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  function beginResize(key: ColKey, e: React.MouseEvent) {
+    startResizingRef.current = { key, startX: e.clientX, startW: colWidths[key] };
+    e.preventDefault();
+    e.stopPropagation();
+  }
 
   async function load() {
     setLoading(true);
@@ -382,33 +534,43 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     try {
       const data = await apiGet<BOQItem[]>(`/scenarios/${scenarioId}/boq`);
       const list = Array.isArray(data) ? data : [];
-      // Normalize BE that might still send legacy `price_terms`
       const norm = list.map((r: any) => ({
         ...r,
         price_term: r.price_term ?? r.price_terms ?? null,
       })) as BOQItem[];
       setRows(norm);
 
-      // backfill product cache
+      // backfill product cache + seed rowFamilyId only if not set
       const ids = Array.from(
         new Set(norm.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
       ).filter((id) => !(id in productCache));
-      if (ids.length > 0) {
-        const fetched: Record<number, Product> = {};
-        await Promise.all(
-          ids.map(async (id) => {
-            try {
-              const p = await apiGet<Product>(`/api/products/${id}`);
-              fetched[id] = p;
-            } catch {
-              /* ignore */
-            }
-          })
-        );
-        if (Object.keys(fetched).length > 0) {
-          setProductCache((prev) => ({ ...prev, ...fetched }));
-        }
+
+      const fetched: Record<number, Product> = {};
+      await Promise.all(
+        ids.map(async (id) => {
+          try {
+            const p = await apiGet<Product>(`/api/products/${id}`);
+            fetched[id] = p;
+          } catch {}
+        })
+      );
+      if (Object.keys(fetched).length > 0) {
+        setProductCache((prev) => ({ ...prev, ...fetched }));
       }
+
+      // seed family per row if empty (one-time default from product)
+      setRowFamilyId((prev) => {
+        const next = { ...prev };
+        for (const r of norm) {
+          if (r.id == null) continue;
+          if (Object.prototype.hasOwnProperty.call(next, r.id)) continue;
+          const prod =
+            (r.product_id && (fetched[r.product_id] || productCache[r.product_id])) || undefined;
+          const pf = prod?.product_family_id;
+          if (pf) next[r.id] = pf;
+        }
+        return next;
+      });
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e?.message || "Failed to load BOQ.");
     } finally {
@@ -420,126 +582,8 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenarioId]);
 
-  /* Satır toplamları (liste üstünde) */
-  const totals = useMemo(() => {
-    let rev = 0,
-      cogs = 0,
-      gm = 0;
-    for (const r of rows) {
-      const q = num(r.quantity);
-      const p = num(r.unit_price);
-      const uc = num(r.unit_cogs ?? 0);
-      const lr = q * p;
-      const lc = q * uc;
-      rev += lr;
-      cogs += lc;
-      gm += lr - lc;
-    }
-    return { rev, cogs, gm };
-  }, [rows]);
-
-  function startAdd() {
-    setDraft({
-      section: "",
-      category: "bulk_with_freight",
-      product_id: null,
-      item_name: "",
-      unit: "",
-      price_term: "bulk_with_freight",
-      quantity: 0,
-      unit_price: 0,
-      unit_cogs: 0,
-      frequency: "once",
-      months: null,
-      start_year: null,
-      start_month: null,
-      is_active: true,
-      notes: "",
-    });
-    setDraftFamilyId("");
-  }
-  function cancelAdd() {
-    setDraft(null);
-    setDraftFamilyId("");
-  }
-
-  async function saveNew() {
-    if (!draft) return;
-    try {
-      const created = await apiPost<BOQItem>(`/scenarios/${scenarioId}/boq`, {
-        ...draft,
-        quantity: num(draft.quantity),
-        unit_price: num(draft.unit_price),
-        unit_cogs: draft.unit_cogs == null ? null : num(draft.unit_cogs),
-        months: draft.months == null ? null : num(draft.months),
-      });
-      // Normalize possible legacy echo
-      const createdNorm: BOQItem = { ...created, price_term: (created as any).price_term ?? (created as any).price_terms ?? null };
-      setRows((p) => [...p, createdNorm]);
-      if (created.product_id && !(created.product_id in productCache)) {
-        try {
-          const p = await apiGet<Product>(`/api/products/${created.product_id}`);
-          setProductCache((prev) => ({ ...prev, [p.id]: p }));
-        } catch {}
-      }
-      setDraft(null);
-      setDraftFamilyId("");
-      onChanged?.();
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || "Save failed.");
-    }
-  }
-
-  async function saveEdit(r: BOQItem) {
-    if (!r.id) return;
-    try {
-      const upd = await apiPut<BOQItem>(`/scenarios/${scenarioId}/boq/${r.id}`, {
-        ...r,
-        quantity: num(r.quantity),
-        unit_price: num(r.unit_price),
-        unit_cogs: r.unit_cogs == null ? null : num(r.unit_cogs),
-        months: r.months == null ? null : num(r.months),
-      });
-      const updNorm: BOQItem = { ...upd, price_term: (upd as any).price_term ?? (upd as any).price_terms ?? null };
-      setRows((p) => p.map((x) => (x.id === r.id ? updNorm : x)));
-      if (upd.product_id && !(upd.product_id in productCache)) {
-        try {
-          const p = await apiGet<Product>(`/api/products/${upd.product_id}`);
-          setProductCache((prev) => ({ ...prev, [p.id]: p }));
-        } catch {}
-      }
-      onChanged?.();
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || "Update failed.");
-    }
-  }
-
-  async function delRow(r: BOQItem) {
-    if (!r.id) return;
-    if (!confirm("Delete BOQ item?")) return;
-    try {
-      await apiDelete(`/scenarios/${scenarioId}/boq/${r.id}`);
-      setRows((p) => p.filter((x) => x.id !== r.id));
-      onChanged?.();
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || "Delete failed.");
-    }
-  }
-
-  async function markReady() {
-    if (!confirm("Mark BOQ as ready and move to TWC?")) return;
-    try {
-      await apiPost(`/scenarios/${scenarioId}/boq/mark-ready`, {});
-      onChanged?.();
-      onMarkedReady?.();
-    } catch (e: any) {
-      alert(e?.response?.data?.detail || e?.message || "Cannot mark as ready.");
-    }
-  }
-
   /* ======= Monthly Preview ======= */
   type MonthAgg = { revenue: number; cogs: number; gm: number };
-
   function getOrInit(map: Map<string, MonthAgg>, key: string): MonthAgg {
     const cur = map.get(key);
     if (cur) return cur;
@@ -547,7 +591,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     map.set(key, blank);
     return blank;
   }
-
   const schedule = useMemo(() => {
     const agg = new Map<string, MonthAgg>();
     const HORIZON = 36;
@@ -567,8 +610,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       const startY = r.start_year!;
       const startM = r.start_month!;
 
-      const freq = r.frequency;
-      if (freq === "monthly") {
+      if (r.frequency === "monthly") {
         const len = Math.max(1, num(r.months ?? 1));
         for (let k = 0; k < Math.min(len, HORIZON); k++) {
           const { year, month } = addMonths(startY, startM, k);
@@ -617,111 +659,96 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     return productCache[id];
   }
 
-  // Compute lookup window: single-month window based on Start (Y/M)
   function singleMonthWindow(r: { start_year?: number | null; start_month?: number | null }) {
     const startISO = toISODateYYYYMM01(r.start_year ?? null, r.start_month ?? null);
-    if (!startISO) return { startISO: null as string | null, endISO: null as string | null };
-    // same-month window – BE best-price works with a single date too
-    return { startISO, endISO: startISO };
+    if (!startISO) return { on: null as string | null };
+    return { on: startISO };
   }
 
-  // Try BE `/best-price?start&end`, fallback to legacy `/best-price`
-  async function fetchBestPrice(productId: number, startISO?: string | null, endISO?: string | null) {
-    try {
-      if (startISO && endISO) {
-        const q = new URLSearchParams();
-        q.set("start", startISO);
-        q.set("end", endISO);
-        const resp = await apiGet<BestPriceResp>(`/api/products/${productId}/best-price?${q.toString()}`);
-        return resp;
-      }
-      const resp = await apiGet<BestPriceResp>(`/api/products/${productId}/best-price`);
-      return resp;
-    } catch (e) {
-      throw e;
-    }
+  // IMPORTANT: use 'on=YYYY-MM-01' to match backend contract
+  async function fetchBestPrice(productId: number, onISO?: string | null) {
+    const q = new URLSearchParams();
+    if (onISO) q.set("on", onISO);
+    return apiGet<BestPriceResp>(
+      `/api/products/${productId}/best-price${q.toString() ? `?${q.toString()}` : ""}`
+    );
   }
 
-  // Auto-update price for a row after product or start date changes
   async function refreshBestPriceForRow(rowId: number) {
     const row = rows.find((x) => x.id === rowId);
     if (!row?.product_id) return;
     try {
-      const { startISO, endISO } = singleMonthWindow(row);
-      const price = await fetchBestPrice(row.product_id, startISO, endISO);
+      const { on } = singleMonthWindow(row);
+      const price = await fetchBestPrice(row.product_id, on);
       setRows((prev) =>
         prev.map((x) =>
           x.id === rowId
             ? {
                 ...x,
                 unit_price: Number(price.unit_price),
-                // sync price_term if BE provides it
                 price_term: price.price_term ?? x.price_term ?? null,
               }
             : x
         )
       );
-    } catch (e: any) {
-      // silent; user can enter price manually
-      console.warn("best-price failed", e?.message || e);
+    } catch {
+      /* silent */
     }
   }
 
-  /* ---------- product selection handlers ---------- */
+  /* ---------- selection helpers ---------- */
   async function applyProductToDraft(p: Product) {
     if (!draft) return;
     setProductCache((prev) => ({ ...prev, [p.id]: p }));
 
-    // UOM from product
     const nextDraft: BOQItem = {
       ...draft,
       product_id: p.id,
-      item_name: p.name,
+      item_name: `${p.code} — ${p.name}`,
       unit: p.uom || draft.unit || "",
     };
 
-    // If Start (Y/M) chosen, fetch price for that month
-    let autoPrice: number | null = null;
     try {
-      const { startISO, endISO } = singleMonthWindow(nextDraft);
-      const price = await fetchBestPrice(p.id, startISO, endISO);
-      autoPrice = Number(price.unit_price);
-      nextDraft.unit_price = autoPrice;
+      const { on } = singleMonthWindow(nextDraft);
+      const price = await fetchBestPrice(p.id, on);
+      nextDraft.unit_price = Number(price.unit_price);
       if (price.price_term) nextDraft.price_term = price.price_term;
     } catch {
-      // fallback base_price
-      autoPrice = p.base_price != null ? Number(p.base_price) : 0;
-      nextDraft.unit_price = autoPrice;
+      nextDraft.unit_price = p.base_price != null ? Number(p.base_price) : 0;
     }
 
     setDraft(nextDraft);
-    setShowPickerFor(null);
+    // draft row’s family UI = product family (helps persistence after save)
+    if (p.product_family_id && !draftFamilyId) setDraftFamilyId(p.product_family_id);
   }
 
   async function applyProductToRow(rowId: number, p: Product) {
     setProductCache((prev) => ({ ...prev, [p.id]: p }));
 
+    // when product changes, adopt its family once
+    if (p.product_family_id) {
+      setRowFamilyId((prev) => ({ ...prev, [rowId]: p.product_family_id! }));
+    }
+
     const current = rows.find((x) => x.id === rowId);
     if (!current) return;
 
-    // Update UI first: item_name, UOM
     setRows((prev) =>
       prev.map((x) =>
         x.id === rowId
           ? {
               ...x,
               product_id: p.id,
-              item_name: p.name,
+              item_name: `${p.code} — ${p.name}`,
               unit: p.uom || x.unit || "",
             }
           : x
       )
     );
 
-    // If Start (Y/M) exists, fetch price
     try {
-      const { startISO, endISO } = singleMonthWindow(current);
-      const price = await fetchBestPrice(p.id, startISO, endISO);
+      const { on } = singleMonthWindow(current);
+      const price = await fetchBestPrice(p.id, on);
       setRows((prev) =>
         prev.map((x) =>
           x.id === rowId
@@ -734,18 +761,66 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         )
       );
     } catch {
-      // fallback base_price
       setRows((prev) =>
         prev.map((x) =>
           x.id === rowId ? { ...x, unit_price: p.base_price != null ? Number(p.base_price) : 0 } : x
         )
       );
     }
-
-    setShowPickerFor(null);
   }
 
   /* ========================================================= */
+
+  const cols: ColKey[] = [
+    "family",
+    "product",
+    "price_term",
+    "uom",
+    "qty",
+    "unit_price",
+    "unit_cogs",
+    "freq",
+    "start",
+    "duration",
+    "active",
+    "actions",
+  ];
+
+  function Th({
+    k,
+    children,
+    align = "left",
+  }: {
+    k: ColKey;
+    children: React.ReactNode;
+    align?: "left" | "right" | "center";
+  }) {
+    return (
+      <th
+        className={cls(
+          "px-3 py-2 bg-gray-50 border-b relative select-none",
+          align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left"
+        )}
+        style={{ width: colWidths[k], minWidth: colWidths[k] }}
+      >
+        <div className="pr-2">{children}</div>
+        <span
+          onMouseDown={(e) => beginResize(k, e)}
+          className="absolute right-0 top-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-indigo-300/60 z-10"
+          title="Drag to resize"
+        />
+      </th>
+    );
+  }
+
+  // --- Family value precedence: manual (rowFamilyId) -> product.family -> ""
+  function getFamilyValueForRow(r: BOQItem): number | "" {
+    if (r.id != null && Object.prototype.hasOwnProperty.call(rowFamilyId, r.id)) {
+      return rowFamilyId[r.id]!;
+    }
+    const pf = r.product_id ? productOf(r.product_id)?.product_family_id : undefined;
+    return pf ?? "";
+  }
 
   return (
     <div className="space-y-3">
@@ -760,20 +835,62 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             Refresh
           </button>
           <button
-            onClick={startAdd}
+            onClick={() =>
+              setColWidths((_) => {
+                const next = { ...DEFAULT_COL_WIDTHS };
+                try {
+                  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+                } catch {}
+                return next;
+              })
+            }
+            className="px-3 py-1.5 rounded-md border text-sm hover:bg-gray-50"
+            title="Reset column widths"
+          >
+            Reset Columns
+          </button>
+          <button
+            onClick={() =>
+              setDraft({
+                section: "",
+                category: "bulk_with_freight",
+                product_id: null,
+                item_name: "",
+                unit: "",
+                price_term: null, // will fill when product picked
+                quantity: 0,
+                unit_price: 0,
+                unit_cogs: 0,
+                frequency: "once",
+                months: null,
+                start_year: null,
+                start_month: null,
+                is_active: true,
+                notes: "",
+              })
+            }
             className="px-3 py-1.5 rounded-md bg-indigo-600 text-white text-sm hover:bg-indigo-500"
           >
             + Add BOQ Item
           </button>
           <button
             onClick={() => setShowPreview((v) => !v)}
-            className="px-3 py-1.5 rounded-md border text-sm hover:bg-gray-50 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 rounded-md border text-sm hover:bg-gray-50"
             title="Monthly simulation (Revenue/COGS/GM)"
           >
             {showPreview ? "Hide Preview" : "Show Preview"}
           </button>
           <button
-            onClick={markReady}
+            onClick={async () => {
+              if (!confirm("Mark BOQ as ready and move to TWC?")) return;
+              try {
+                await apiPost(`/scenarios/${scenarioId}/boq/mark-ready`, {});
+                onChanged?.();
+                onMarkedReady?.();
+              } catch (e: any) {
+                alert(e?.response?.data?.detail || e?.message || "Cannot mark as ready.");
+              }
+            }}
             className={cls(
               "px-3 py-1.5 rounded-md text-sm",
               isReady || rows.length === 0
@@ -799,24 +916,35 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       )}
 
       <div className="overflow-x-auto border rounded bg-white">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50">
+        <table className="min-w-full text-sm" style={{ tableLayout: "fixed" }}>
+          <colgroup>
+            {cols.map((k) => (
+              <col key={k} style={{ width: colWidths[k], minWidth: colWidths[k] }} />
+            ))}
+          </colgroup>
+
+          <thead>
             <tr>
-              <th className="px-3 py-2 text-left w-[220px]">Family</th>
-              <th className="px-3 py-2 text-left w-[320px]">Product</th>
-              <th className="px-3 py-2 text-left w-[160px]">Price Term</th>
-              <th className="px-3 py-2 text-left w-[100px]">UOM</th>
-              <th className="px-3 py-2 text-right w-[90px]">Qty</th>
-              <th className="px-3 py-2 text-right w-[120px]">Unit Price</th>
-              <th className="px-3 py-2 text-right w-[110px]">Unit COGS</th>
-              <th className="px-3 py-2 text-left w-[110px]">Freq</th>
-              <th className="px-3 py-2 text-left w-[140px]">Start (Y/M)</th>
-              <th className="px-3 py-2 text-left w-[120px]">Duration</th>
-              <th className="px-3 py-2 text-center w-[70px]">Active</th>
-              <th className="px-3 py-2 text-right w-[110px]">Line Rev</th>
-              <th className="px-3 py-2 text-right w-[110px]">Line COGS</th>
-              <th className="px-3 py-2 text-right w-[110px]">Line GM</th>
-              <th className="px-3 py-2 w-48">Actions</th>
+              <Th k="family">{COL_LABELS.family}</Th>
+              <Th k="product">{COL_LABELS.product}</Th>
+              <Th k="price_term">{COL_LABELS.price_term}</Th>
+              <Th k="uom">{COL_LABELS.uom}</Th>
+              <Th k="qty" align="right">
+                {COL_LABELS.qty}
+              </Th>
+              <Th k="unit_price" align="right">
+                {COL_LABELS.unit_price}
+              </Th>
+              <Th k="unit_cogs" align="right">
+                {COL_LABELS.unit_cogs}
+              </Th>
+              <Th k="freq">{COL_LABELS.freq}</Th>
+              <Th k="start">{COL_LABELS.start}</Th>
+              <Th k="duration">{COL_LABELS.duration}</Th>
+              <Th k="active" align="center">
+                {COL_LABELS.active}
+              </Th>
+              <Th k="actions">{COL_LABELS.actions}</Th>
             </tr>
           </thead>
 
@@ -825,49 +953,62 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             {draft && (
               <tr className="bg-amber-50/40">
                 <td className="px-3 py-2">
-                  <select
-                    className="w-full px-2 py-1 rounded border border-gray-300"
+                  <FamilySelect
                     value={draftFamilyId}
-                    onChange={(e) => setDraftFamilyId(e.target.value ? Number(e.target.value) : "")}
-                  >
-                    <option value="">All</option>
-                    {families.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name}
-                      </option>
-                    ))}
-                  </select>
+                    families={families}
+                    onChange={(nextId) => {
+                      setDraftFamilyId(nextId);
+                      setDraft((d) =>
+                        d
+                          ? {
+                              ...d,
+                              product_id: null,
+                              item_name: "",
+                              unit: "",
+                              price_term: null, // clear and unfreeze
+                            }
+                          : d
+                      );
+                    }}
+                  />
                 </td>
 
                 <td className="px-3 py-2">
-                  <div className="flex gap-2">
-                    <input
-                      className="w-full px-2 py-1 rounded border border-gray-300"
-                      placeholder="Product"
-                      value={draft.item_name}
-                      onChange={(e) => setDraft({ ...draft, item_name: e.target.value })}
-                    />
-                    <button
-                      className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                      onClick={() => setShowPickerFor("draft")}
-                      title="Select Product"
-                    >
-                      Select
-                    </button>
-                  </div>
+                  <ProductAutocomplete
+                    familyId={draftFamilyId}
+                    disabled={!draftFamilyId}
+                    value={draft.item_name}
+                    onChangeText={(t) => setDraft({ ...draft, item_name: t })}
+                    onPick={(p) => applyProductToDraft(p)}
+                    placeholder="Search code or name…"
+                  />
                 </td>
 
                 <td className="px-3 py-2">
                   <select
-                    className="w-full px-2 py-1 rounded border border-gray-300"
-                    value={draft.price_term ?? "bulk_with_freight"}
+                    className={cls(
+                      "w-full px-2 py-1 rounded border border-gray-300",
+                      draft.product_id ? "bg-gray-100 text-gray-500 cursor-not-allowed" : ""
+                    )}
+                    value={draft.price_term ?? ""}
                     onChange={(e) =>
                       setDraft({
                         ...draft,
-                        price_term: e.target.value as BOQItem["price_term"],
+                        price_term: e.target.value
+                          ? (e.target.value as BOQItem["price_term"])
+                          : null,
                       })
                     }
+                    disabled={!!draft.product_id} // FREEZE when product picked
+                    title={
+                      draft.product_id
+                        ? "Derived from Price Book (change by editing Price Book)"
+                        : "Select price term"
+                    }
                   >
+                    <option value="" disabled>
+                      {draft.product_id ? "— derived —" : "Select…"}
+                    </option>
                     {PRICE_TERMS_OPTIONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -883,33 +1024,37 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     value={draft.unit}
                     onChange={(e) => setDraft({ ...draft, unit: e.target.value })}
                     readOnly
+                    title={draft.unit}
                   />
                 </td>
 
                 <td className="px-3 py-2">
-                  <input
-                    type="number"
-                    className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                  <NumberInput
                     value={num(draft.quantity)}
-                    onChange={(e) => setDraft({ ...draft, quantity: Number(e.target.value) })}
+                    onChange={(n) => setDraft({ ...draft, quantity: n })}
+                    min={0}
+                    placeholder="0"
+                    title={String(draft.quantity ?? 0)}
                   />
                 </td>
 
                 <td className="px-3 py-2">
-                  <input
-                    type="number"
-                    className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                  <NumberInput
                     value={num(draft.unit_price)}
-                    onChange={(e) => setDraft({ ...draft, unit_price: Number(e.target.value) })}
+                    onChange={(n) => setDraft({ ...draft, unit_price: n })}
+                    min={0}
+                    placeholder="0.00"
+                    title={String(draft.unit_price ?? 0)}
                   />
                 </td>
 
                 <td className="px-3 py-2">
-                  <input
-                    type="number"
-                    className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                  <NumberInput
                     value={num(draft.unit_cogs ?? 0)}
-                    onChange={(e) => setDraft({ ...draft, unit_cogs: Number(e.target.value) })}
+                    onChange={(n) => setDraft({ ...draft, unit_cogs: n })}
+                    min={0}
+                    placeholder="0.00"
+                    title={String(draft.unit_cogs ?? 0)}
                   />
                 </td>
 
@@ -939,16 +1084,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     }}
                     onChange={async ({ year, month }) => {
                       const next = { ...draft, start_year: year, start_month: month };
-                      // Update price if product chosen
                       if (next.product_id) {
                         try {
-                          const { startISO, endISO } = singleMonthWindow(next);
-                          const price = await fetchBestPrice(next.product_id!, startISO, endISO);
+                          const { on } = singleMonthWindow(next);
+                          const price = await fetchBestPrice(next.product_id!, on);
                           next.unit_price = Number(price.unit_price);
                           if (price.price_term) next.price_term = price.price_term;
-                        } catch {
-                          /* silent */
-                        }
+                        } catch {}
                       }
                       setDraft(next);
                     }}
@@ -956,18 +1098,12 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                 </td>
 
                 <td className="px-3 py-2">
-                  <input
-                    type="number"
-                    className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                  <NumberInput
                     value={draft.months ?? ""}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        months: e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
-                    title="Duration in months"
+                    onChange={(n) => setDraft({ ...draft, months: Number.isFinite(n) ? n : null })}
+                    min={0}
                     placeholder="months"
+                    title={String(draft.months ?? "")}
                   />
                 </td>
 
@@ -979,33 +1115,61 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                   />
                 </td>
 
-                <td className="px-3 py-2 text-right">
-                  {(num(draft.quantity) * num(draft.unit_price)).toLocaleString(undefined, {
-                    maximumFractionDigits: 2,
-                  })}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {(num(draft.quantity) * num(draft.unit_cogs ?? 0)).toLocaleString(undefined, {
-                    maximumFractionDigits: 2,
-                  })}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {(
-                    num(draft.quantity) * num(draft.unit_price) -
-                    num(draft.quantity) * num(draft.unit_cogs ?? 0)
-                  ).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </td>
-
                 <td className="px-3 py-2">
                   <div className="flex gap-2">
                     <button
-                      onClick={saveNew}
+                      onClick={async () => {
+                        try {
+                          const created = await apiPost<BOQItem>(`/scenarios/${scenarioId}/boq`, {
+                            ...draft,
+                            quantity: num(draft.quantity),
+                            unit_price: num(draft.unit_price),
+                            unit_cogs: draft.unit_cogs == null ? null : num(draft.unit_cogs),
+                            months: draft.months == null ? null : num(draft.months),
+                          });
+                          const createdNorm: BOQItem = {
+                            ...created,
+                            price_term:
+                              (created as any).price_term ?? (created as any).price_terms ?? null,
+                          };
+                          setRows((p) => [...p, createdNorm]);
+
+                          // hydrate product cache & persist family selection for the new row
+                          if (created.product_id && !(created.product_id in productCache)) {
+                            try {
+                              const p = await apiGet<Product>(`/api/products/${created.product_id}`);
+                              setProductCache((prev) => ({ ...prev, [p.id]: p }));
+                              if (createdNorm.id != null) {
+                                setRowFamilyId((prev) => ({
+                                  ...prev,
+                                  [createdNorm.id!]: p.product_family_id ?? draftFamilyId ?? "",
+                                }));
+                              }
+                            } catch {
+                              if (createdNorm.id != null && draftFamilyId !== "") {
+                                setRowFamilyId((prev) => ({ ...prev, [createdNorm.id!]: draftFamilyId }));
+                              }
+                            }
+                          } else if (createdNorm.id != null && draftFamilyId !== "") {
+                            setRowFamilyId((prev) => ({ ...prev, [createdNorm.id!]: draftFamilyId }));
+                          }
+
+                          setDraft(null);
+                          setDraftFamilyId("");
+                          onChanged?.();
+                        } catch (e: any) {
+                          alert(e?.response?.data?.detail || e?.message || "Save failed.");
+                        }
+                      }}
                       className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
                     >
                       Save
                     </button>
                     <button
-                      onClick={cancelAdd}
+                      onClick={() => {
+                        setDraft(null);
+                        setDraftFamilyId("");
+                      }}
                       className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
                     >
                       Cancel
@@ -1017,75 +1181,87 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
 
             {/* ------ EXISTING ROWS ------ */}
             {rows.map((r) => {
-              const lineRev = num(r.quantity) * num(r.unit_price);
-              const lineCogs = num(r.quantity) * num(r.unit_cogs ?? 0);
-              const lineGM = lineRev - lineCogs;
               const linkedProd = productOf(r.product_id ?? undefined);
-              const famValue = rowFamilyId[r.id!] ?? "";
+              const famValue = getFamilyValueForRow(r);
 
               return (
                 <tr key={r.id} className="odd:bg-white even:bg-gray-50">
-                  {/* Family (UI filter only) */}
+                  {/* Family */}
                   <td className="px-3 py-2">
-                    <select
-                      className="w-full px-2 py-1 rounded border border-gray-300"
+                    <FamilySelect
                       value={famValue}
-                      onChange={(e) =>
-                        setRowFamilyId((prev) => ({
-                          ...prev,
-                          [r.id!]: e.target.value ? Number(e.target.value) : "",
-                        }))
-                      }
-                    >
-                      <option value="">All</option>
-                      {families.map((f) => (
-                        <option key={f.id} value={f.id}>
-                          {f.name}
-                        </option>
-                      ))}
-                    </select>
+                      families={families}
+                      onChange={(nextId) => {
+                        if (r.id != null) {
+                          setRowFamilyId((prev) => ({ ...prev, [r.id!]: nextId }));
+                        }
+                        // clear product & price term when family changes (unfreeze)
+                        setRows((p) =>
+                          p.map((x) =>
+                            x.id === r.id
+                              ? { ...x, product_id: null, item_name: "", unit: "", price_term: null }
+                              : x
+                          )
+                        );
+                      }}
+                    />
                   </td>
 
                   {/* Product */}
                   <td className="px-3 py-2">
-                    <div className="flex gap-2">
-                      <input
-                        className="w-full px-2 py-1 rounded border border-gray-300"
-                        value={r.item_name}
-                        onChange={(e) =>
-                          setRows((p) => p.map((x) => (x.id === r.id ? { ...x, item_name: e.target.value } : x)))
-                        }
-                      />
-                      <button
-                        className="px-2 py-1 rounded border hover:bg-gray-50 text-xs"
-                        onClick={() => setShowPickerFor(r.id!)}
-                        title="Select Product"
-                      >
-                        Select
-                      </button>
-                    </div>
+                    <ProductAutocomplete
+                      familyId={famValue}
+                      disabled={!famValue}
+                      value={r.item_name}
+                      onChangeText={(t) =>
+                        setRows((p) => p.map((x) => (x.id === r.id ? { ...x, item_name: t } : x)))
+                      }
+                      onPick={(p) => applyProductToRow(r.id!, p)}
+                      placeholder="Search code or name…"
+                    />
                     {!!r.product_id && (
-                      <div className="text-xs text-gray-500">
-                        linked: <b>{linkedProd?.code || `#${r.product_id}`}</b> • {linkedProd?.name || ""}
+                      <div className="text-xs text-gray-500 mt-1">
+                        linked:{" "}
+                        <b title={linkedProd?.code || `#${r.product_id}`}>
+                          {linkedProd?.code || `#${r.product_id}`}
+                        </b>{" "}
+                        • <span title={linkedProd?.name || ""}>{linkedProd?.name || ""}</span>
                       </div>
                     )}
                   </td>
 
-                  {/* Price Term */}
+                  {/* Price Term (FREEZE when product linked) */}
                   <td className="px-3 py-2">
                     <select
-                      className="w-full px-2 py-1 rounded border border-gray-300"
-                      value={r.price_term ?? "bulk_with_freight"}
+                      className={cls(
+                        "w-full px-2 py-1 rounded border border-gray-300",
+                        r.product_id ? "bg-gray-100 text-gray-500 cursor-not-allowed" : ""
+                      )}
+                      value={r.price_term ?? ""}
                       onChange={(e) =>
                         setRows((p) =>
                           p.map((x) =>
                             x.id === r.id
-                              ? { ...x, price_term: e.target.value as BOQItem["price_term"] }
+                              ? {
+                                  ...x,
+                                  price_term: e.target.value
+                                    ? (e.target.value as BOQItem["price_term"])
+                                    : null,
+                                }
                               : x
                           )
                         )
                       }
+                      disabled={!!r.product_id}
+                      title={
+                        r.product_id
+                          ? "Derived from Price Book (change by editing Price Book)"
+                          : "Select price term"
+                      }
                     >
+                      <option value="" disabled>
+                        {r.product_id ? "— derived —" : "Select…"}
+                      </option>
                       {PRICE_TERMS_OPTIONS.map((c) => (
                         <option key={c} value={c}>
                           {c}
@@ -1094,52 +1270,49 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     </select>
                   </td>
 
-                  {/* UOM (read-only; from product) */}
+                  {/* UOM */}
                   <td className="px-3 py-2">
                     <input
                       className="w-full px-2 py-1 rounded border border-gray-300"
                       value={r.unit}
                       onChange={() => {}}
                       readOnly
+                      title={r.unit}
                     />
                   </td>
 
                   <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                    <NumberInput
                       value={num(r.quantity)}
-                      onChange={(e) =>
-                        setRows((p) =>
-                          p.map((x) => (x.id === r.id ? { ...x, quantity: Number(e.target.value) } : x))
-                        )
+                      onChange={(n) =>
+                        setRows((p) => p.map((x) => (x.id === r.id ? { ...x, quantity: n } : x)))
                       }
+                      min={0}
+                      placeholder="0"
+                      title={String(r.quantity ?? 0)}
                     />
                   </td>
 
                   <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                    <NumberInput
                       value={num(r.unit_price)}
-                      onChange={(e) =>
-                        setRows((p) =>
-                          p.map((x) => (x.id === r.id ? { ...x, unit_price: Number(e.target.value) } : x))
-                        )
+                      onChange={(n) =>
+                        setRows((p) => p.map((x) => (x.id === r.id ? { ...x, unit_price: n } : x)))
                       }
+                      min={0}
+                      placeholder="0.00"
+                      title={String(r.unit_price ?? 0)}
                     />
                   </td>
 
                   <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                    <NumberInput
                       value={num(r.unit_cogs ?? 0)}
-                      onChange={(e) =>
-                        setRows((p) =>
-                          p.map((x) => (x.id === r.id ? { ...x, unit_cogs: Number(e.target.value) } : x))
-                        )
+                      onChange={(n) =>
+                        setRows((p) => p.map((x) => (x.id === r.id ? { ...x, unit_cogs: n } : x)))
                       }
+                      min={0}
+                      placeholder="0.00"
                     />
                   </td>
 
@@ -1151,10 +1324,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                         setRows((p) =>
                           p.map((x) =>
                             x.id === r.id
-                              ? {
-                                  ...x,
-                                  frequency: e.target.value as BOQItem["frequency"],
-                                }
+                              ? { ...x, frequency: e.target.value as BOQItem["frequency"] }
                               : x
                           )
                         )
@@ -1167,45 +1337,34 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     </select>
                   </td>
 
-                  {/* Start (Y/M) – update price when changed */}
+                  {/* Start (Y/M) */}
                   <td className="px-3 py-2">
                     <MonthInput
-                      value={{
-                        year: r.start_year ?? null,
-                        month: r.start_month ?? null,
-                      }}
+                      value={{ year: r.start_year ?? null, month: r.start_month ?? null }}
                       onChange={async ({ year, month }) => {
                         setRows((p) =>
                           p.map((x) =>
                             x.id === r.id ? { ...x, start_year: year, start_month: month } : x
                           )
                         );
-                        if (r.product_id) {
-                          await refreshBestPriceForRow(r.id!);
-                        }
+                        if (r.product_id) await refreshBestPriceForRow(r.id!);
                       }}
                     />
                   </td>
 
                   <td className="px-3 py-2">
-                    <input
-                      type="number"
-                      className="w-full px-2 py-1 rounded border border-gray-300 text-right"
+                    <NumberInput
                       value={r.months ?? ""}
-                      onChange={(e) =>
+                      onChange={(n) =>
                         setRows((p) =>
                           p.map((x) =>
-                            x.id === r.id
-                              ? {
-                                  ...x,
-                                  months: e.target.value === "" ? null : Number(e.target.value),
-                                }
-                              : x
+                            x.id === r.id ? { ...x, months: Number.isFinite(n) ? n : null } : x
                           )
                         )
                       }
-                      title="Duration in months"
+                      min={0}
                       placeholder="months"
+                      title={String(r.months ?? "")}
                     />
                   </td>
 
@@ -1221,26 +1380,48 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     />
                   </td>
 
-                  <td className="px-3 py-2 text-right">
-                    {lineRev.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    {lineCogs.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    {lineGM.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </td>
-
                   <td className="px-3 py-2">
                     <div className="flex flex-wrap gap-2">
                       <button
-                        onClick={() => saveEdit(r)}
+                        onClick={async () => {
+                          if (!r.id) return;
+                          try {
+                            const upd = await apiPut<BOQItem>(`/scenarios/${scenarioId}/boq/${r.id}`, {
+                              ...r,
+                              quantity: num(r.quantity),
+                              unit_price: num(r.unit_price),
+                              unit_cogs: r.unit_cogs == null ? null : num(r.unit_cogs),
+                              months: r.months == null ? null : num(r.months),
+                            });
+                            const updNorm: BOQItem = {
+                              ...upd,
+                              price_term:
+                                (upd as any).price_term ?? (upd as any).price_terms ?? null,
+                            };
+                            setRows((p) => p.map((x) => (x.id === r.id ? updNorm : x)));
+
+                            // keep existing rowFamilyId as-is (user choice persists)
+                            onChanged?.();
+                          } catch (e: any) {
+                            alert(e?.response?.data?.detail || e?.message || "Update failed.");
+                          }
+                        }}
                         className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
                       >
                         Save
                       </button>
                       <button
-                        onClick={() => delRow(r)}
+                        onClick={async () => {
+                          if (!r.id) return;
+                          if (!confirm("Delete BOQ item?")) return;
+                          try {
+                            await apiDelete(`/scenarios/${scenarioId}/boq/${r.id}`);
+                            setRows((p) => p.filter((x) => x.id !== r.id));
+                            onChanged?.();
+                          } catch (e: any) {
+                            alert(e?.response?.data?.detail || e?.message || "Delete failed.");
+                          }
+                        }}
                         className="px-2 py-1 rounded border hover:bg-gray-50 text-sm"
                       >
                         Delete
@@ -1251,55 +1432,15 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
               );
             })}
           </tbody>
-
-          {showPreview && (
-            <tfoot>
-              <tr className="bg-gray-100 font-semibold">
-                <td className="px-3 py-2" colSpan={11}>
-                  Totals
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {totals.rev.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {totals.cogs.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {(totals.rev - totals.cogs).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                </td>
-                <td />
-              </tr>
-            </tfoot>
-          )}
         </table>
       </div>
-
-      {/* Product Picker modal (for draft or an existing row) */}
-      <ProductPicker
-        open={showPickerFor !== null}
-        onClose={() => setShowPickerFor(null)}
-        onPick={(p) => {
-          if (showPickerFor === "draft") return applyProductToDraft(p);
-          if (typeof showPickerFor === "number") return applyProductToRow(showPickerFor, p);
-        }}
-        familyId={
-          showPickerFor === "draft"
-            ? draftFamilyId
-            : typeof showPickerFor === "number"
-            ? rowFamilyId[showPickerFor] ?? ""
-            : ""
-        }
-      />
 
       {showPreview && (
         <div className="mt-3 border rounded bg-white">
           <div className="px-3 py-2 border-b bg-gray-50 font-medium">
             Preview • Monthly schedule (active items)
           </div>
-          <MonthlyPreviewPivot
-            rows={schedule.rows}
-            totals={{ revenue: totals.rev, cogs: totals.cogs, gm: totals.rev - totals.cogs }}
-          />
+          <MonthlyPreviewPivot rows={schedule.rows} totals={schedule.totals} />
         </div>
       )}
     </div>

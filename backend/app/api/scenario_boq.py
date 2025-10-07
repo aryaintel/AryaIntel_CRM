@@ -46,6 +46,11 @@ class BOQItemIn(BaseModel):
     months: Optional[int] = None
     formulation_id: Optional[int] = None
     price_escalation_policy_id: Optional[int] = None
+
+    # NEW: Product snapshot & Price Term snapshot
+    product_id: Optional[int] = None
+    price_term: Optional[str] = None  # e.g. "NET30", "CIA", etc.
+
     is_active: bool = True
     notes: Optional[str] = None
     category: Optional[str] = None  # bulk_with_freight|bulk_ex_freight|freight
@@ -81,6 +86,11 @@ class BOQItemOut(BaseModel):
     months: Optional[int]
     formulation_id: Optional[int]
     price_escalation_policy_id: Optional[int]
+
+    # NEW: snapshots returned to FE
+    product_id: Optional[int]
+    price_term: Optional[str]
+
     is_active: bool
     notes: Optional[str]
     category: Optional[str]
@@ -168,6 +178,11 @@ def create_boq_item(
         months=payload.months,
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
+
+        # NEW: persist snapshots
+        product_id=payload.product_id,
+        price_term=payload.price_term,
+
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -209,6 +224,11 @@ def update_boq_item(
         months=payload.months,
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
+
+        # NEW
+        product_id=payload.product_id,
+        price_term=payload.price_term,
+
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,

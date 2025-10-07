@@ -1,6 +1,7 @@
 // src/lib/apiProducts.ts
-import { apiGet, apiPost, apiPut, apiDelete } from "./api";
+import { apiGet, apiPost, apiPut, apiDelete, ApiError } from "./api";
 
+// ---------- Types ----------
 export type ProductFamily = {
   id: number;
   name: string;
@@ -46,6 +47,118 @@ export type PriceBookEntry = {
   product_name?: string;
 };
 
+// ---------- Price Terms ----------
+export type PriceTerm = {
+  id: number;
+  code: string;
+  name: string;
+  description?: string | null;
+  is_active: 0 | 1;
+  sort_order?: number | null;
+  // tolerate old UI fields if they exist in the form
+  default_days?: number | null;
+  notes?: string | null;
+};
+
+const PRICE_TERMS_BASES = ["/api/price-terms", "/api/price_terms"];
+
+async function getWithFallback<T>(paths: string[]): Promise<T> {
+  let lastErr: unknown;
+  for (const p of paths) {
+    try {
+      return await apiGet<T>(p);
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) {
+        continue; // try next candidate
+      }
+      throw e; // real error (401/403/500…) bubble up
+    }
+  }
+  throw lastErr ?? new ApiError(404, "PriceTerms endpoint not found");
+}
+
+async function postWithFallback<T>(paths: string[], body: any): Promise<T> {
+  let lastErr: unknown;
+  for (const p of paths) {
+    try {
+      return await apiPost<T>(p, body);
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) continue;
+      throw e;
+    }
+  }
+  throw lastErr ?? new ApiError(404, "PriceTerms endpoint not found");
+}
+
+async function putWithFallback<T>(paths: string[], body: any): Promise<T> {
+  let lastErr: unknown;
+  for (const p of paths) {
+    try {
+      return await apiPut<T>(p, body);
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) continue;
+      throw e;
+    }
+  }
+  throw lastErr ?? new ApiError(404, "PriceTerms endpoint not found");
+}
+
+async function deleteWithFallback(paths: string[]): Promise<void> {
+  let lastErr: unknown;
+  for (const p of paths) {
+    try {
+      await apiDelete(p);
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (e instanceof ApiError && (e.status === 404 || e.status === 405)) continue;
+      throw e;
+    }
+  }
+  throw lastErr ?? new ApiError(404, "PriceTerms endpoint not found");
+}
+
+export async function listPriceTerms(params?: { q?: string; active_only?: boolean; limit?: number; offset?: number }) {
+  const u = new URLSearchParams();
+  if (params?.q) u.set("q", params.q);
+  if (params?.active_only !== undefined) u.set("active_only", String(params.active_only));
+  if (params?.limit !== undefined) u.set("limit", String(params.limit));
+  if (params?.offset !== undefined) u.set("offset", String(params.offset));
+  const qs = u.toString() ? `?${u}` : "";
+  return getWithFallback<PriceTerm[]>(PRICE_TERMS_BASES.map((b) => `${b}${qs}`));
+}
+
+export async function listPriceTermOptions() {
+  return getWithFallback<Array<Pick<PriceTerm, "id" | "code" | "name">>>(
+    PRICE_TERMS_BASES.map((b) => `${b}/options`)
+  );
+}
+
+export async function getPriceTerm(termId: number) {
+  return getWithFallback<PriceTerm>(PRICE_TERMS_BASES.map((b) => `${b}/${termId}`));
+}
+
+export async function getPriceTermByCode(code: string) {
+  return getWithFallback<PriceTerm>(PRICE_TERMS_BASES.map((b) => `${b}/by-code/${encodeURIComponent(code)}`));
+}
+
+export async function createPriceTerm(payload: Partial<PriceTerm>) {
+  // backend expects: code, name, description?, is_active?, sort_order?
+  return postWithFallback<PriceTerm>(PRICE_TERMS_BASES, payload);
+}
+
+export async function updatePriceTerm(termId: number, payload: Partial<PriceTerm>) {
+  return putWithFallback<PriceTerm>(PRICE_TERMS_BASES.map((b) => `${b}/${termId}`), payload);
+}
+
+export async function deletePriceTerm(termId: number, force = false) {
+  const qs = force ? "?force=true" : "";
+  return deleteWithFallback(PRICE_TERMS_BASES.map((b) => `${b}/${termId}${qs}`));
+}
+
 // ---------- Product Families ----------
 export async function listProductFamilies(params?: { active?: boolean }) {
   const qs =
@@ -62,7 +175,6 @@ export async function updateProductFamily(id: number, payload: Partial<ProductFa
 }
 
 export async function deleteProductFamily(id: number) {
-  // apiDelete generik değilse cast gerekiyor
   return apiDelete(`/api/product-families/${id}`) as Promise<{ deleted: boolean }>;
 }
 

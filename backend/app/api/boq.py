@@ -34,8 +34,11 @@ class BOQItemIn(BaseModel):
     start_month: Optional[int] = Field(None, ge=1, le=12)
     months: Optional[int] = Field(None, ge=1, le=120)
 
-    # NEW: optional link to Product
+    # Link to Product
     product_id: Optional[int] = None
+
+    # NEW: price term snapshot carried on the BOQ row
+    price_term: Optional[str] = Field(None)
 
     is_active: bool = True
     notes: Optional[str] = None
@@ -71,6 +74,7 @@ class BOQItemOut(BaseModel):
     months: Optional[int]
     # NEW
     product_id: Optional[int]
+    price_term: Optional[str]
     is_active: bool
     notes: Optional[str]
     category: Optional[str]
@@ -142,6 +146,7 @@ def create_boq_item(
         start_month=payload.start_month,
         months=payload.months,
         product_id=payload.product_id,   # NEW
+        price_term=payload.price_term,   # NEW
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -223,7 +228,8 @@ def bulk_insert_boq_items(
                 start_year=item.start_year,
                 start_month=item.start_month,
                 months=item.months,
-                product_id=item.product_id,   # NEW
+                product_id=item.product_id,     # NEW
+                price_term=item.price_term,     # NEW
                 is_active=item.is_active,
                 notes=item.notes,
                 category=item.category,
@@ -323,6 +329,7 @@ class BOQItemIn2(_BaseModel):
     price_escalation_policy_id: _Optional[int] = None
     # NEW
     product_id: _Optional[int] = None
+    price_term: _Optional[str] = None
     is_active: bool = True
     notes: _Optional[str] = None
     category: _Optional[str] = None  # bulk_with_freight|bulk_ex_freight|freight
@@ -360,6 +367,7 @@ class BOQItemOut2(_BaseModel):
     price_escalation_policy_id: _Optional[int]
     # NEW
     product_id: _Optional[int]
+    price_term: _Optional[str]
     is_active: bool
     notes: _Optional[str]
     category: _Optional[str]
@@ -413,8 +421,8 @@ def list_boq_items_2(
     items = q.all()
     return items
 
-@router2.post("/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED)
-@router2.post("/business-cases/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED)
+@router2.post("/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED, response_model=BOQItemOut2)
+@router2.post("/business-cases/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED, response_model=BOQItemOut2)
 def create_boq_item_2(
     scenario_id: int,
     payload: BOQItemIn2,
@@ -439,6 +447,7 @@ def create_boq_item_2(
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
         product_id=payload.product_id,   # NEW
+        price_term=payload.price_term,   # NEW
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -446,10 +455,10 @@ def create_boq_item_2(
     db.add(item)
     db.commit()
     db.refresh(item)
-    return {"id": item.id}
+    return item
 
-@router2.put("/scenarios/{scenario_id}/boq/{item_id}")
-@router2.put("/business-cases/scenarios/{scenario_id}/boq/{item_id}")
+@router2.put("/scenarios/{scenario_id}/boq/{item_id}", response_model=BOQItemOut2)
+@router2.put("/business-cases/scenarios/{scenario_id}/boq/{item_id}", response_model=BOQItemOut2)
 def update_boq_item_2(
     scenario_id: int,
     item_id: int,
@@ -477,7 +486,8 @@ def update_boq_item_2(
         months=payload.months,
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
-        product_id=payload.product_id,   # NEW
+        product_id=payload.product_id,     # NEW
+        price_term=payload.price_term,     # NEW
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -485,7 +495,8 @@ def update_boq_item_2(
         setattr(item, k, v)
 
     db.commit()
-    return {"updated": 1}
+    db.refresh(item)
+    return item
 
 @router2.delete("/scenarios/{scenario_id}/boq/{item_id}")
 @router2.delete("/business-cases/scenarios/{scenario_id}/boq/{item_id}")
