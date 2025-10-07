@@ -122,6 +122,29 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
             """
         )
 
+    # --- reference: price_terms ---------------------------------------------
+    #  (id, code unique, name, is_active)
+    if not _table_exists(con, "price_terms"):
+        con.execute(
+            """
+            CREATE TABLE price_terms (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        # Basit tohumlar (gerekirse)
+        con.executemany(
+            "INSERT OR IGNORE INTO price_terms (code, name, is_active) VALUES (?,?,1)",
+            [
+                ("bulk_with_freight", "Bulk with Freight"),
+                ("bulk_ex_freight",  "Bulk ex Freight"),
+                ("freight",          "Freight Only"),
+            ],
+        )
+
     # --- price_book_entries --------------------------------------------------
     if not _table_exists(con, "price_book_entries"):
         con.execute(
@@ -136,8 +159,10 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
                 valid_to TEXT,   -- inclusive (NULL=open-ended)
                 is_active INTEGER NOT NULL DEFAULT 1,
                 price_term TEXT,
+                price_term_id INTEGER NULL,
                 FOREIGN KEY(price_book_id) REFERENCES price_books(id) ON DELETE CASCADE,
-                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE
+                FOREIGN KEY(product_id) REFERENCES products(id) ON DELETE CASCADE,
+                FOREIGN KEY(price_term_id) REFERENCES price_terms(id) ON DELETE SET NULL
             )
             """
         )
@@ -148,10 +173,12 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
             """
         )
     else:
-        # migration-safe: add price_term if missing
+        # migration-safe: add price_term TEXT if missing (geri uyum)
         if not _column_exists(con, "price_book_entries", "price_term"):
             con.execute("ALTER TABLE price_book_entries ADD COLUMN price_term TEXT")
-
+        # yeni referans id kolonu
+        if not _column_exists(con, "price_book_entries", "price_term_id"):
+            con.execute("ALTER TABLE price_book_entries ADD COLUMN price_term_id INTEGER NULL")
     con.commit()
 
 
@@ -167,6 +194,26 @@ def _clean_desc(v: Any) -> Optional[str]:
 
 def _to_db_bool(v: Any) -> int:
     return 1 if bool(v) else 0
+
+
+# --------------------------- Price Term helper --------------------------
+def _resolve_price_term_id(con: sqlite3.Connection, payload: Dict[str, Any]) -> Optional[int]:
+    """
+    Öncelik: price_term_id (doğrudan).
+    Alternatif: price_term (code) -> id.
+    Yoksa: None (kolon NULL olabilir).
+    """
+    if payload is None:
+        return None
+    if "price_term_id" in payload and payload["price_term_id"] is not None:
+        return int(payload["price_term_id"])
+    code = (payload.get("price_term") or "").strip()
+    if code:
+        r = con.execute("SELECT id FROM price_terms WHERE lower(code)=lower(?)", (code,)).fetchone()
+        if not r:
+            raise HTTPException(422, f"unknown price_term code: {code}")
+        return int(r["id"])
+    return None
 
 
 # ---------------------------------------------------------------------
@@ -542,9 +589,14 @@ def delete_price_book(book_id: int) -> Dict[str, Any]:
 def list_price_book_entries(book_id: int, product_id: Optional[int] = None) -> Dict[str, Any]:
     with cx() as con:
         sql = """
-        SELECT e.*, p.code AS product_code, p.name AS product_name
+        SELECT e.*,
+               p.code AS product_code,
+               p.name AS product_name,
+               pt.id   AS price_term_id,
+               pt.code AS price_term
         FROM price_book_entries e
         JOIN products p ON p.id = e.product_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
         WHERE e.price_book_id = ?
         """
         params: List[Any] = [book_id]
@@ -573,12 +625,14 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
         ).fetchone():
             raise HTTPException(404, "Product not found")
 
+        price_term_id = _resolve_price_term_id(con, payload)
+
         try:
             cur = con.execute(
                 """
                 INSERT INTO price_book_entries
-                (price_book_id, product_id, unit_price, currency, valid_from, valid_to, is_active, price_term)
-                VALUES (?,?,?,?,?,?,?,?)
+                (price_book_id, product_id, unit_price, currency, valid_from, valid_to, is_active, price_term, price_term_id)
+                VALUES (?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     book_id,
@@ -588,7 +642,8 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
                     payload.get("valid_from"),
                     payload.get("valid_to"),
                     _to_db_bool(payload.get("is_active", True)),
-                    payload.get("price_term"),
+                    payload.get("price_term"),  # back-compat (TEXT)
+                    price_term_id,
                 ),
             )
             con.commit()
@@ -600,30 +655,42 @@ def create_price_book_entry(book_id: int, payload: Dict[str, Any]) -> Dict[str, 
 @router.put("/price-books/{book_id}/entries/{entry_id}")
 @router.put("/price-books/{book_id}/entries/{entry_id}/")
 def update_price_book_entry(book_id: int, entry_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
-    allowed = ["unit_price", "currency", "valid_from", "valid_to", "is_active", "product_id", "price_term"]
+    allowed = ["unit_price", "currency", "valid_from", "valid_to", "is_active", "product_id", "price_term", "price_term_id"]
     sets: List[str] = []
     params: List[Any] = []
-    for k in allowed:
-        if k not in payload:
-            continue
-        if k == "unit_price":
-            sets.append("unit_price = ?")
-            params.append(float(payload.get(k)))
-        elif k == "is_active":
-            sets.append("is_active = ?")
-            params.append(_to_db_bool(payload.get(k)))
-        else:
-            sets.append(f"{k} = ?")
-            params.append(payload.get(k))
-    if not sets:
-        return {"updated": 0}
+
     with cx() as con:
+        # Resolve price_term_id from code if needed (prefer explicit id)
+        if "price_term_id" in payload or "price_term" in payload:
+            resolved = _resolve_price_term_id(con, payload)
+            sets.append("price_term_id = ?")
+            params.append(resolved)
+
+        for k in allowed:
+            if k not in payload:
+                continue
+            if k in ("price_term_id",):  # already handled above
+                continue
+            if k == "unit_price":
+                sets.append("unit_price = ?")
+                params.append(float(payload.get(k)))
+            elif k == "is_active":
+                sets.append("is_active = ?")
+                params.append(_to_db_bool(payload.get(k)))
+            else:
+                sets.append(f"{k} = ?")
+                params.append(payload.get(k))
+
+        if not sets:
+            return {"updated": 0}
+
         exists = con.execute(
             "SELECT 1 FROM price_book_entries WHERE id = ? AND price_book_id = ?",
             (entry_id, book_id),
         ).fetchone()
         if not exists:
             raise HTTPException(404, "Entry not found")
+
         params.append(entry_id)
         con.execute(f"UPDATE price_book_entries SET {', '.join(sets)} WHERE id = ?", params)
         con.commit()
@@ -684,14 +751,17 @@ def best_price_for_product(
             if book_opt is not None:
                 row = con.execute(
                     """
-                    SELECT *
-                    FROM price_book_entries
-                    WHERE price_book_id = ?
-                      AND product_id = ?
-                      AND is_active = 1
-                      AND (valid_from IS NULL OR date(valid_from) <= date(?))
-                      AND (valid_to   IS NULL OR date(valid_to)   >= date(?))
-                    ORDER BY date(IFNULL(valid_from,'0001-01-01')) DESC, id DESC
+                    SELECT e.*,
+                           pt.id   AS price_term_id,
+                           pt.code AS price_term
+                    FROM price_book_entries e
+                    LEFT JOIN price_terms pt ON pt.id = e.price_term_id
+                    WHERE e.price_book_id = ?
+                      AND e.product_id = ?
+                      AND e.is_active = 1
+                      AND (e.valid_from IS NULL OR date(e.valid_from) <= date(?))
+                      AND (e.valid_to   IS NULL OR date(e.valid_to)   >= date(?))
+                    ORDER BY date(IFNULL(e.valid_from,'0001-01-01')) DESC, e.id DESC
                     LIMIT 1
                     """,
                     (book_opt, pid, on_date, on_date),
@@ -700,9 +770,12 @@ def best_price_for_product(
                     return row
             return con.execute(
                 """
-                SELECT e.*
+                SELECT e.*,
+                       pt.id   AS price_term_id,
+                       pt.code AS price_term
                 FROM price_book_entries e
                 JOIN price_books b ON b.id = e.price_book_id
+                LEFT JOIN price_terms pt ON pt.id = e.price_term_id
                 WHERE e.product_id = ?
                   AND e.is_active = 1
                   AND b.is_active = 1
@@ -720,9 +793,12 @@ def best_price_for_product(
         if not entry:
             entry = con.execute(
                 """
-                SELECT e.*
+                SELECT e.*,
+                       pt.id   AS price_term_id,
+                       pt.code AS price_term
                 FROM price_book_entries e
                 JOIN price_books b ON b.id = e.price_book_id
+                LEFT JOIN price_terms pt ON pt.id = e.price_term_id
                 WHERE e.product_id = ?
                   AND e.is_active = 1
                   AND b.is_active = 1
@@ -745,5 +821,6 @@ def best_price_for_product(
             "currency": entry["currency"],
             "valid_from": entry["valid_from"],
             "valid_to": entry["valid_to"],
-            "price_term": entry.get("price_term") if isinstance(entry, dict) else entry["price_term"],
+            "price_term_id": entry["price_term_id"],
+            "price_term": entry["price_term"],  # code
         }

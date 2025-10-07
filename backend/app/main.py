@@ -12,6 +12,7 @@ from .api.escalation import router as escalation_router
 from app.api.rise_fall_api import router as rise_fall_router  # keep absolute to match pkg layout
 from app.api.rebates_runtime import router as rebates_runtime_router
 from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
+from app.api.price_terms import router as price_terms_router
 
 # Core modules
 from .api import (
@@ -42,6 +43,7 @@ from .api.products_api import router as products_router
 
 # Rebates (Scenario-level CRUD)
 from .api.rebates_api import router as rebates_router
+from .api.db_schema import router as db_schema_router
 
 
 app = FastAPI(title="Arya CRM API")
@@ -189,3 +191,7 @@ app.include_router(products_router)
 
 # Rebates runtimfe (preview endpoint used by Summary & others)
 app.include_router(rebates_runtime_router)
+
+# Debug & tooling
+app.include_router(db_schema_router)
+app.include_router(price_terms_router)                    # <- add

@@ -113,13 +113,16 @@ def _best_price_for_product(
       1) default & active price book AND entry period-valid,
       2) any active price book AND entry period-valid,
       3) latest active entry regardless of date window.
+    NOTE: now also returns price_term_id and price_term (code) via LEFT JOIN price_terms.
     """
     # 1) default price book + period-valid
     row = cx.execute(
         """
-        SELECT e.*, b.currency AS book_currency
+        SELECT e.*, b.currency AS book_currency,
+               pt.id AS price_term_id, pt.code AS price_term
         FROM price_book_entries e
         JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
         WHERE e.product_id = ?
           AND e.is_active = 1
           AND b.is_active = 1
@@ -137,9 +140,11 @@ def _best_price_for_product(
     # 2) any active book + period-valid (prefer default if ties)
     row = cx.execute(
         """
-        SELECT e.*, b.currency AS book_currency
+        SELECT e.*, b.currency AS book_currency,
+               pt.id AS price_term_id, pt.code AS price_term
         FROM price_book_entries e
         JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
         WHERE e.product_id = ?
           AND e.is_active = 1
           AND b.is_active = 1
@@ -158,9 +163,11 @@ def _best_price_for_product(
     # 3) latest active entry (ignore date window)
     row = cx.execute(
         """
-        SELECT e.*, b.currency AS book_currency
+        SELECT e.*, b.currency AS book_currency,
+               pt.id AS price_term_id, pt.code AS price_term
         FROM price_book_entries e
         JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
         WHERE e.product_id = ?
           AND e.is_active = 1
           AND b.is_active = 1
@@ -199,7 +206,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
       - elif product_id exists: price = best PriceBook entry on ym
       - else: fallback to stored unit_price on BOQ
     Returns numbers as strings to keep precision consistent.
-    Also returns `price_term` when using a Price Book entry, so FE can auto-fill BOQ's Price Terms.
+    Also returns `price_term` (code) and `price_term_id` when using a Price Book entry.
     """
     y, m = _parse_ym(ym)
     on_date = _ym_to_date(ym)
@@ -213,6 +220,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
         currency = "USD"
         source = "boq_unit_price"
         price_term = None
+        price_term_id = None
 
         # 1) formulation based
         if row["formulation_id"] is not None:
@@ -234,6 +242,7 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
                 "line_total": str(line_total),
                 "source": "formulation",
                 "price_term": None,
+                "price_term_id": None,
             }
 
         # 2) price book by product_id
@@ -243,8 +252,8 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
                 unit_price = Decimal(str(pbe["unit_price"])).quantize(Decimal("0.01"))
                 currency = (pbe["currency"] or pbe["book_currency"] or "USD")
                 source = "product_price_book"
-                # NEW: pass-through price_term if present on the price book entry
                 price_term = pbe["price_term"] if "price_term" in pbe.keys() else None
+                price_term_id = pbe["price_term_id"] if "price_term_id" in pbe.keys() else None
             else:
                 unit_price = Decimal(str(row["unit_price"] or 0)).quantize(Decimal("0.01"))
                 source = "boq_unit_price"
@@ -264,7 +273,8 @@ def boq_price_preview(boq_id: int, ym: str = Query(..., description="YYYY-MM")):
             "quantity": str(qty),
             "line_total": str(line_total),
             "source": source,
-            "price_term": price_term,  # NEW
+            "price_term": price_term,
+            "price_term_id": price_term_id,
         }
 
 
@@ -293,6 +303,7 @@ def scenario_bounded_price_preview(
         currency = "USD"
         source = "boq_unit_price"
         price_term = None
+        price_term_id = None
 
         # formulation
         if row["formulation_id"] is not None:
@@ -314,6 +325,7 @@ def scenario_bounded_price_preview(
                 "line_total": str(line_total),
                 "source": "formulation",
                 "price_term": None,
+                "price_term_id": None,
             }
 
         # price book
@@ -324,6 +336,7 @@ def scenario_bounded_price_preview(
                 currency = (pbe["currency"] or pbe["book_currency"] or "USD")
                 source = "product_price_book"
                 price_term = pbe["price_term"] if "price_term" in pbe.keys() else None
+                price_term_id = pbe["price_term_id"] if "price_term_id" in pbe.keys() else None
             else:
                 unit_price = Decimal(str(row["unit_price"] or 0)).quantize(Decimal("0.01"))
                 source = "boq_unit_price"
@@ -342,7 +355,8 @@ def scenario_bounded_price_preview(
             "quantity": str(qty),
             "line_total": str(line_total),
             "source": source,
-            "price_term": price_term,  # NEW
+            "price_term": price_term,
+            "price_term_id": price_term_id,
         }
 
 
