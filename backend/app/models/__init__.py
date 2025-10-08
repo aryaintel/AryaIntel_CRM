@@ -556,7 +556,7 @@ class Scenario(Base):
 
 
 # =========================
-# Scenario: Revenues (Products) & Overheads
+# Scenario-level: Revenues (Products) & Overheads
 # =========================
 class ScenarioProduct(Base):
     __tablename__ = "scenario_products"
@@ -629,8 +629,15 @@ class ScenarioCapex(Base):
     reward_enabled = Column(Boolean, nullable=True, default=False)
     reward_pct = Column(Numeric(8, 4), nullable=True)  # yüzde, örn. 50 -> %50
     reward_spread_kind = Column(String, nullable=True, default="even")  # even|follow_boq|custom
-    linked_boq_item_id = Column(Integer, nullable=True)  # FK opsiyonel (SQLite mevcut tabloda yoksa zorlamayalım)
+    linked_boq_item_id = Column(Integer, nullable=True)  # intentionally no FK (SQLite portability)
     term_months_override = Column(Integer, nullable=True)
+
+    # NEW: direct link to a generated Service row (nullable; no FK for portability)
+    linked_service_id = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("idx_scenario_capex_linked_service", "linked_service_id"),
+    )
 
 
 # =========================

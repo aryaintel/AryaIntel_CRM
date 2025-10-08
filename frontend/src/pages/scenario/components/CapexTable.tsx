@@ -38,6 +38,21 @@ type CapexRow = {
   quantity?: number | null;
   contingency_pct?: number | null;
   partial_month_policy?: string | null;
+
+  // ====== Excel-parity: Return (Reward) controls ======
+  reward_enabled?: boolean | null;           // toggle
+  reward_pct?: number | null;                // % as 0..100 (e.g., 15 for 15%)
+  reward_spread_kind?: string | null;        // e.g., "even"
+  term_months_override?: number | null;      // optional override for spread term
+
+  // Links created by generators
+  linked_boq_item_id?: number | null;
+  linked_service_id?: number | null;
+};
+
+type ScenarioLite = {
+  id: number;
+  default_capex_reward_pct?: number | null;
 };
 
 /* ---------- Utils ---------- */
@@ -98,6 +113,18 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
   const [err, setErr] = useState<string | null>(null);
   const [openAdv, setOpenAdv] = useState<Partial<Record<OpenKey, boolean>>>({});
 
+  // Scenario defaults (prefill reward_pct)
+  const [scenario, setScenario] = useState<ScenarioLite | null>(null);
+
+  async function loadScenario() {
+    try {
+      const sc = await apiGet<ScenarioLite>(`${apiBase}`);
+      setScenario(sc || null);
+    } catch {
+      // non-blocking
+    }
+  }
+
   async function load() {
     setLoading(true);
     setErr(null);
@@ -112,7 +139,10 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
   }
 
   useEffect(() => {
-    if (scenarioId) load();
+    if (scenarioId) {
+      loadScenario();
+      load();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenarioId]);
 
@@ -141,6 +171,13 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
       contingency_pct: 0,
       partial_month_policy: "full_month",
       notes: "",
+      // Reward defaults
+      reward_enabled: false,
+      reward_pct: scenario?.default_capex_reward_pct ?? null,
+      reward_spread_kind: "even",
+      term_months_override: null,
+      linked_boq_item_id: null,
+      linked_service_id: null,
     });
     setOpenAdv((p) => ({ ...p, draft: false }));
   }
@@ -154,28 +191,34 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
     });
   }
 
+  function normalizeForSave<T extends CapexRow>(row: T): T {
+    const body: T = {
+      ...row,
+      year: num(row.year),
+      month: num(row.month),
+      amount: num(row.amount),
+      useful_life_months:
+        row.useful_life_months == null ? null : num(row.useful_life_months),
+      salvage_value: row.salvage_value == null ? null : num(row.salvage_value),
+      disposal_year: row.disposal_year == null ? null : num(row.disposal_year),
+      disposal_month: row.disposal_month == null ? null : num(row.disposal_month),
+      disposal_proceeds:
+        row.disposal_proceeds == null ? null : num(row.disposal_proceeds),
+      per_unit_cost: row.per_unit_cost == null ? null : num(row.per_unit_cost),
+      quantity: row.quantity == null ? null : num(row.quantity),
+      contingency_pct: row.contingency_pct == null ? null : num(row.contingency_pct),
+      reward_pct: row.reward_pct == null ? null : num(row.reward_pct),
+      term_months_override:
+        row.term_months_override == null ? null : num(row.term_months_override),
+    };
+    return body;
+  }
+
   async function saveNew() {
     if (!draft) return;
     setSaving(true);
     try {
-      const body: CapexRow = {
-        ...draft,
-        year: num(draft.year),
-        month: num(draft.month),
-        amount: num(draft.amount),
-        useful_life_months:
-          draft.useful_life_months == null ? null : num(draft.useful_life_months),
-        salvage_value: draft.salvage_value == null ? null : num(draft.salvage_value),
-        disposal_year: draft.disposal_year == null ? null : num(draft.disposal_year),
-        disposal_month: draft.disposal_month == null ? null : num(draft.disposal_month),
-        disposal_proceeds:
-          draft.disposal_proceeds == null ? null : num(draft.disposal_proceeds),
-        per_unit_cost: draft.per_unit_cost == null ? null : num(draft.per_unit_cost),
-        quantity: draft.quantity == null ? null : num(draft.quantity),
-        contingency_pct:
-          draft.contingency_pct == null ? null : num(draft.contingency_pct),
-      };
-      const created = await apiPost<CapexRow>(`${apiBase}/capex`, body);
+      const created = await apiPost<CapexRow>(`${apiBase}/capex`, normalizeForSave(draft));
       setRows((p) => [...p, created]);
       setDraft(null);
       onChanged?.();
@@ -190,23 +233,7 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
     if (!r.id) return;
     setSaving(true);
     try {
-      const body: CapexRow = {
-        ...r,
-        year: num(r.year),
-        month: num(r.month),
-        amount: num(r.amount),
-        useful_life_months:
-          r.useful_life_months == null ? null : num(r.useful_life_months),
-        salvage_value: r.salvage_value == null ? null : num(r.salvage_value),
-        disposal_year: r.disposal_year == null ? null : num(r.disposal_year),
-        disposal_month: r.disposal_month == null ? null : num(r.disposal_month),
-        disposal_proceeds:
-          r.disposal_proceeds == null ? null : num(r.disposal_proceeds),
-        per_unit_cost: r.per_unit_cost == null ? null : num(r.per_unit_cost),
-        quantity: r.quantity == null ? null : num(r.quantity),
-        contingency_pct: r.contingency_pct == null ? null : num(r.contingency_pct),
-      };
-      const upd = await apiPut<CapexRow>(`${apiBase}/capex/${r.id}`, body);
+      const upd = await apiPut<CapexRow>(`${apiBase}/capex/${r.id}`, normalizeForSave(r));
       setRows((p) => p.map((x) => (x.id === r.id ? upd : x)));
       onChanged?.();
     } catch (e: any) {
@@ -228,33 +255,113 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
     }
   }
 
-   async function markReady() {
-  if (!confirm("Mark CAPEX as ready and move to READY (P&L)?")) return;
+  // ==== Generators: CAPEX → BOQ / Service (server is source of truth) ====
+  async function generateWithAttempts(urls: Array<{ url: string; body?: any }>) {
+    let lastErr: any = null;
+    for (const u of urls) {
+      try {
+        const res = await apiPost<any>(u.url, u.body ?? {});
+        return res;
+      } catch (e: any) {
+        lastErr = e;
+        const st = e?.response?.status;
+        if (![404, 405].includes(st)) break; // other errors: stop trying
+      }
+    }
+    throw lastErr;
+  }
 
-  const attempts: Array<() => Promise<any>> = [
-    // Doğru rota (Swagger’da gördügit rev-parse --show-toplevelğümüz)
-    () => apiPost(`${apiBase}/workflow/mark-capex-ready`, {}),
-    // Bazı backend sürümlerinde PUT olabilir
-    () => apiPut(`${apiBase}/workflow/mark-capex-ready`, {}),
-  ];
+  async function generateBoqFromCapex(r: CapexRow) {
+    if (!r.id) return alert("Please save the CAPEX row first.");
+    if (!(r.reward_enabled && num(r.reward_pct) > 0))
+      return alert("Enable Reward and set Return % > 0 in Details.");
 
-  let lastErr: any = null;
-  for (const run of attempts) {
     try {
-      await run();
-      onMarkedReady?.();
-      alert("Workflow moved to READY.");
-      return;
+      setSaving(true);
+      const attempts = [
+        { url: `${apiBase}/capex/${r.id}/generate/boq` },
+        { url: `${apiBase}/capex/${r.id}/generate-boq` },
+        { url: `${apiBase}/capex/${r.id}/generate`, body: { target: "boq" } },
+      ];
+      const out = await generateWithAttempts(attempts);
+
+      const linkId = out?.linked_boq_item_id ?? out?.boq_id ?? out?.id ?? null;
+      if (linkId) {
+        setRows((p) =>
+          p.map((x) => (x.id === r.id ? { ...x, linked_boq_item_id: linkId } : x))
+        );
+      }
+      await load();
+      onChanged?.();
+      alert("Generated BOQ line from CAPEX.");
     } catch (e: any) {
-      lastErr = e;
-      const st = e?.response?.status;
-      // 404/405: bir sonraki denemeye geç
-      if (![404, 405].includes(st)) break;
+      alert(
+        e?.response?.data?.detail ||
+          e?.message ||
+          "Could not generate BOQ from CAPEX. Please ensure backend generate endpoint exists."
+      );
+    } finally {
+      setSaving(false);
     }
   }
 
-  alert(lastErr?.response?.data?.detail || lastErr?.message || "Cannot mark CAPEX as ready.");
-}
+  async function generateServiceFromCapex(r: CapexRow) {
+    if (!r.id) return alert("Please save the CAPEX row first.");
+    if (!(r.reward_enabled && num(r.reward_pct) > 0))
+      return alert("Enable Reward and set Return % > 0 in Details.");
+
+    try {
+      setSaving(true);
+      const attempts = [
+        { url: `${apiBase}/capex/${r.id}/generate/service` },
+        { url: `${apiBase}/capex/${r.id}/generate-service` },
+        { url: `${apiBase}/capex/${r.id}/generate`, body: { target: "service" } },
+      ];
+      const out = await generateWithAttempts(attempts);
+
+      const linkId = out?.linked_service_id ?? out?.service_id ?? out?.id ?? null;
+      if (linkId) {
+        setRows((p) =>
+          p.map((x) => (x.id === r.id ? { ...x, linked_service_id: linkId } : x))
+        );
+      }
+      await load();
+      onChanged?.();
+      alert("Generated Service from CAPEX.");
+    } catch (e: any) {
+      alert(
+        e?.response?.data?.detail ||
+          e?.message ||
+          "Could not generate Service from CAPEX. Please ensure backend generate endpoint exists."
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function markReady() {
+    if (!confirm("Mark CAPEX as ready and move to READY (P&L)?")) return;
+
+    const attempts: Array<() => Promise<any>> = [
+      () => apiPost(`${apiBase}/workflow/mark-capex-ready`, {}),
+      () => apiPut(`${apiBase}/workflow/mark-capex-ready`, {}),
+    ];
+
+    let lastErr: any = null;
+    for (const run of attempts) {
+      try {
+        await run();
+        onMarkedReady?.();
+        alert("Workflow moved to READY.");
+        return;
+      } catch (e: any) {
+        lastErr = e;
+        const st = e?.response?.status;
+        if (![404, 405].includes(st)) break;
+      }
+    }
+    alert(lastErr?.response?.data?.detail || lastErr?.message || "Cannot mark CAPEX as ready.");
+  }
 
   const total = useMemo(
     () => rows.reduce((s, r) => s + (Number(r.amount) || 0), 0),
@@ -266,6 +373,8 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
   const inputCls =
     "w-full px-2 py-1 rounded border border-gray-300 focus:outline-none focus:ring";
   const inputRight = cls(inputCls, "text-right");
+  const badgeCls =
+    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium";
 
   // Category öneri listesi: preset + satırlardan gelen benzersizler
   const categoryOptions = useMemo(() => {
@@ -304,6 +413,14 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
     const [localSalvage, setLocalSalvage] = useState<string>(String(value.salvage_value ?? ""));
     const [localContPct, setLocalContPct] = useState<string>(String(value.contingency_pct ?? ""));
 
+    // Reward locals
+    const [localRewardPct, setLocalRewardPct] = useState<string>(
+      value.reward_pct == null ? "" : String(value.reward_pct)
+    );
+    const [localTermOverride, setLocalTermOverride] = useState<string>(
+      value.term_months_override == null ? "" : String(value.term_months_override)
+    );
+
     // Satır kimliği değişince lokal state’i senkle
     useEffect(() => {
       setLocalAsset(value.asset_name ?? "");
@@ -316,6 +433,8 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
       setLocalQty(value.quantity == null ? "" : String(value.quantity));
       setLocalSalvage(value.salvage_value == null ? "" : String(value.salvage_value));
       setLocalContPct(value.contingency_pct == null ? "" : String(value.contingency_pct));
+      setLocalRewardPct(value.reward_pct == null ? "" : String(value.reward_pct));
+      setLocalTermOverride(value.term_months_override == null ? "" : String(value.term_months_override));
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [value.id]);
 
@@ -346,6 +465,22 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
         }
       };
 
+    const LinkPill = ({ id, color, label }: { id?: number | null; color: "emerald" | "indigo"; label: string }) =>
+      id ? (
+        <span
+          className={cls(
+            badgeCls,
+            color === "emerald"
+              ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+              : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+          )}
+        >
+          {label} #{id}
+        </span>
+      ) : null;
+
+    const canGenerate = !!value.reward_enabled && num(value.reward_pct) > 0;
+
     return (
       <>
         <tr className="odd:bg-white even:bg-gray-50 align-top">
@@ -361,6 +496,10 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
               autoComplete="off"
               spellCheck={false}
             />
+            <div className="mt-1 space-x-2">
+              <LinkPill id={value.linked_service_id} color="emerald" label="Linked Service" />
+              <LinkPill id={value.linked_boq_item_id} color="indigo" label="Linked BOQ" />
+            </div>
           </td>
 
           {/* Category */}
@@ -474,9 +613,9 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
           </td>
 
           {/* Actions */}
-          <td className="px-3 py-2 w-52">
+          <td className="px-3 py-2 w-80">
             <div className={labelCls}>&nbsp;</div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {isDraft ? (
                 <>
                   <button
@@ -505,14 +644,46 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
                       "px-3 py-1 rounded text-white",
                       saving ? "bg-indigo-400" : "bg-indigo-600 hover:bg-indigo-700"
                     )}
+                    title="Save row"
                   >
                     Save
                   </button>
                   <button
                     onClick={() => delRow(value)}
                     className="px-3 py-1 rounded bg-gray-200 hover:bg-gray-300"
+                    title="Delete row"
                   >
                     Delete
+                  </button>
+
+                  <div className="ml-1 h-5 w-px bg-gray-300" />
+
+                  <button
+                    onClick={() => generateServiceFromCapex(value)}
+                    disabled={saving || !value.id || !canGenerate}
+                    title={!canGenerate ? "Enable Reward and set Return % > 0 first" : "Generate Service from CAPEX"}
+                    className={cls(
+                      "px-3 py-1 rounded text-white",
+                      saving || !canGenerate
+                        ? "bg-emerald-300"
+                        : "bg-emerald-600 hover:bg-emerald-700"
+                    )}
+                  >
+                    Generate → Service
+                  </button>
+
+                  <button
+                    onClick={() => generateBoqFromCapex(value)}
+                    disabled={saving || !value.id || !canGenerate}
+                    title={!canGenerate ? "Enable Reward and set Return % > 0 first" : "Generate BOQ from CAPEX"}
+                    className={cls(
+                      "px-3 py-1 rounded text-white",
+                      saving || !canGenerate
+                        ? "bg-sky-300"
+                        : "bg-sky-600 hover:bg-sky-700"
+                    )}
+                  >
+                    Generate → BOQ
                   </button>
                 </>
               )}
@@ -531,6 +702,97 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
           <tr className="bg-white border-t">
             <td colSpan={9} className="px-3 pb-4">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-2">
+                {/* ====== Reward (Return) panel ====== */}
+                <div className="md:col-span-3 border rounded p-3 bg-indigo-50/40">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="font-medium text-indigo-900">Return (Reward)</div>
+                    <label className="flex items-center gap-2 text-sm text-indigo-900">
+                      <input
+                        type="checkbox"
+                        checked={!!value.reward_enabled}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          let next: CapexRow = { ...value, reward_enabled: enabled };
+                          if (enabled && (next.reward_pct == null || next.reward_pct === 0)) {
+                            next = {
+                              ...next,
+                              reward_pct: scenario?.default_capex_reward_pct ?? next.reward_pct ?? null,
+                            };
+                            setLocalRewardPct(
+                              next.reward_pct == null ? "" : String(next.reward_pct)
+                            );
+                          }
+                          onChange(next);
+                        }}
+                      />
+                      <span>Enable Reward</span>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                    <div>
+                      <div className={labelCls}>Return Ratio (%)</div>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        pattern="[0-9.,]*"
+                        value={localRewardPct}
+                        onChange={(e) => setLocalRewardPct(e.target.value)}
+                        onBlur={() => commitNum("reward_pct", localRewardPct)}
+                        onKeyDown={commitOnEnter(() => commitNum("reward_pct", localRewardPct))}
+                        className={inputRight}
+                        autoComplete="off"
+                        disabled={!value.reward_enabled}
+                        placeholder={
+                          scenario?.default_capex_reward_pct != null
+                            ? `Default ${scenario.default_capex_reward_pct}`
+                            : "e.g. 15"
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <div className={labelCls}>Spread</div>
+                      <select
+                        value={value.reward_spread_kind || "even"}
+                        onChange={(e) => onChange({ ...value, reward_spread_kind: e.target.value })}
+                        className={inputCls}
+                        disabled={!value.reward_enabled}
+                      >
+                        <option value="even">Even</option>
+                        {/* place for future kinds; backend validates */}
+                      </select>
+                    </div>
+
+                    <div>
+                      <div className={labelCls}>Term (months, override)</div>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={localTermOverride}
+                        onChange={(e) => setLocalTermOverride(e.target.value)}
+                        onBlur={() => commitNum("term_months_override", localTermOverride)}
+                        onKeyDown={commitOnEnter(() =>
+                          commitNum("term_months_override", localTermOverride)
+                        )}
+                        className={inputRight}
+                        autoComplete="off"
+                        disabled={!value.reward_enabled}
+                        placeholder="Optional"
+                      />
+                    </div>
+
+                    <div className="flex items-end">
+                      <div className="text-xs text-gray-600">
+                        When enabled, backend converts CAPEX into a monthly revenue stream
+                        (Excel parity). No FE math — server is the source of truth.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ====== Regular Advanced fields ====== */}
                 <div>
                   <div className={labelCls}>Disposal (Y/M)</div>
                   <input
@@ -640,7 +902,8 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
                   >
                     <option value="full_month">Full month</option>
                     <option value="half_month">Half month</option>
-                    <option value="prorate">Prorate</option>
+                    {/* backend expects "actual_days" for prorate */}
+                    <option value="actual_days">Prorate (actual days)</option>
                   </select>
                 </div>
 
@@ -719,7 +982,7 @@ export default function CapexTable({ scenarioId, onChanged, onMarkedReady }: Pro
                 <th className="px-3 py-2 w-36">Service Start</th>
                 <th className="px-3 py-2 w-36 text-right">Useful Life</th>
                 <th className="px-3 py-2 w-40">Depreciation</th>
-                <th className="px-3 py-2 w-52">Actions</th>
+                <th className="px-3 py-2 w-80">Actions</th>
               </tr>
             </thead>
             <tbody>

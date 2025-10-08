@@ -1,11 +1,17 @@
-from typing import List, Optional
-from decimal import Decimal
+from typing import List, Optional, Dict
+from decimal import Decimal, ROUND_HALF_UP
 from fastapi import APIRouter, Depends, HTTPException, status, Path, Query
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-from ..models import Scenario, ScenarioCapex
+from ..models import (
+    Scenario,
+    ScenarioCapex,
+    ScenarioService,
+    ScenarioServiceMonth,
+    ScenarioBOQItem,
+)
 from .deps import get_db, get_current_user  # auth token kontrolü (mevcut projedeki bağımlılık)
 
 router = APIRouter(
@@ -54,10 +60,13 @@ class CapexIn(BaseModel):
 
     # NEW: Capex Reward alanları
     reward_enabled: Optional[bool] = Field(False, description="Capex Reward mekanizması açık mı?")
-    reward_pct: Optional[Decimal] = Field(None, ge=0, le=100, description="Yüzde (örn. 50 → %50)")
+    reward_pct: Optional[Decimal] = Field(None, ge=0, le=100, description="Yüzde (örn. 50 → %50) [ANNUAL]")
     reward_spread_kind: Optional[str] = Field("even", description="even|follow_boq|custom")
     linked_boq_item_id: Optional[int] = Field(None, ge=1)
     term_months_override: Optional[int] = Field(None, ge=1, le=1200)
+
+    # NEW: direct service link
+    linked_service_id: Optional[int] = Field(None, ge=1)
 
     # ---- validators ----
     @validator("depr_method")
@@ -125,10 +134,13 @@ class CapexOut(BaseModel):
 
     # NEW: Capex Reward alanları
     reward_enabled: Optional[bool]
-    reward_pct: Optional[Decimal]
+    reward_pct: Optional[Decimal]       # ANNUAL %
     reward_spread_kind: Optional[str]
     linked_boq_item_id: Optional[int]
     term_months_override: Optional[int]
+
+    # NEW
+    linked_service_id: Optional[int]
 
     class Config:
         orm_mode = True
@@ -136,6 +148,13 @@ class CapexOut(BaseModel):
 
 class CapexBulkIn(BaseModel):
     items: List[CapexIn]
+
+
+class GenerateResult(BaseModel):
+    linked_service_id: Optional[int] = None
+    linked_boq_item_id: Optional[int] = None
+    months: Optional[int] = None
+    monthly_amount: Optional[Decimal] = None
 
 
 # =========================
@@ -190,6 +209,78 @@ def _apply_payload(row: ScenarioCapex, payload: CapexIn) -> None:
     row.reward_spread_kind = payload.reward_spread_kind
     row.linked_boq_item_id = payload.linked_boq_item_id
     row.term_months_override = payload.term_months_override
+
+    # NEW
+    row.linked_service_id = payload.linked_service_id
+
+
+def _ym_to_index(y: int, m: int) -> int:
+    return y * 12 + (m - 1)
+
+
+def _index_to_ym(i: int) -> Dict[str, int]:
+    y = i // 12
+    m = (i % 12) + 1
+    return {"year": y, "month": m}
+
+
+def _months_between(start_year: int, start_month: int, end_year: int, end_month: int) -> int:
+    """start -> end arası ay farkı (start ile aynı ay = 0)."""
+    return _ym_to_index(end_year, end_month) - _ym_to_index(start_year, start_month)
+
+
+def _round2(x: Decimal) -> Decimal:
+    return x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _compute_return_schedule_excel_monthly(
+    scenario: Scenario,
+    capex: ScenarioCapex,
+) -> Dict[str, Decimal | int]:
+    """
+    EXCEL PARITY:
+      - reward_pct is ANNUAL.
+      - monthly_amount = CAPEX * (reward_pct/100) / 12  (constant each month)
+      - Start = service_start (varsa) değilse scenario start.
+      - Term = term_months_override varsa kullan; yoksa senaryonun kalan süresi (start'tan sona).
+    """
+    if not capex.reward_enabled:
+        raise HTTPException(status_code=400, detail="Reward is not enabled for this CAPEX row.")
+
+    # reward_pct: row > scenario default > error
+    reward_pct = capex.reward_pct
+    if reward_pct is None:
+        reward_pct = getattr(scenario, "default_capex_reward_pct", None)
+    if reward_pct is None or Decimal(reward_pct) <= 0:
+        raise HTTPException(status_code=400, detail="Reward percent is missing or zero.")
+
+    # Start YM
+    if capex.service_start_year and capex.service_start_month:
+        start_year = int(capex.service_start_year)
+        start_month = int(capex.service_start_month)
+    else:
+        start_year = int(scenario.start_date.year)
+        start_month = int(scenario.start_date.month)
+
+    # Term
+    if capex.term_months_override and capex.term_months_override > 0:
+        term = int(capex.term_months_override)
+    else:
+        diff = _months_between(
+            scenario.start_date.year, scenario.start_date.month, start_year, start_month
+        )
+        term = int(scenario.months - diff)
+    if term <= 0:
+        raise HTTPException(status_code=400, detail="Computed term is not positive. Check service start and scenario dates.")
+
+    monthly_amount = _round2(Decimal(capex.amount) * Decimal(reward_pct) / Decimal(100) / Decimal(12))
+
+    return {
+        "start_year": start_year,
+        "start_month": start_month,
+        "term": term,
+        "monthly_amount": monthly_amount,   # sabit, her ay
+    }
 
 
 # =========================
@@ -326,3 +417,147 @@ def bulk_insert_capex(
     for r in new_rows:
         db.refresh(r)
     return new_rows
+
+
+# =========================
+# Generators (Excel parity: annual%/12, constant monthly)
+# =========================
+@router.post(
+    "/{scenario_id}/capex/{item_id}/generate/service",
+    response_model=GenerateResult,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate a Service from CAPEX (Annual return% / 12 → constant monthly, repeated for term)",
+)
+def generate_service_from_capex(
+    scenario_id: int = Path(..., ge=1),
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    sc = _ensure_scenario(db, scenario_id)
+    row = db.get(ScenarioCapex, item_id)
+    if not row or row.scenario_id != scenario_id:
+        raise HTTPException(status_code=404, detail="CAPEX item not found")
+
+    # Idempotence
+    if row.linked_service_id:
+        return GenerateResult(linked_service_id=row.linked_service_id)
+
+    sched = _compute_return_schedule_excel_monthly(sc, row)
+
+    # Create parent service
+    service = ScenarioService(
+        scenario_id=scenario_id,
+        service_name=f"CAPEX return – {row.asset_name or f'CAPEX #{row.id}'}",
+        category="capex_return",
+        vendor=None,
+        unit="month",
+        quantity=Decimal(1),
+        unit_cost=sched["monthly_amount"],  # constant monthly expense
+        currency="TRY",
+        start_year=int(sched["start_year"]),
+        start_month=int(sched["start_month"]),
+        duration_months=int(sched["term"]),
+        end_year=None,
+        end_month=None,
+        payment_term="monthly",
+        cash_out_month_policy="service_month",
+        escalation_pct=Decimal(0),
+        escalation_freq="none",
+        tax_rate=Decimal(0),
+        expense_includes_tax=False,
+        notes=f"Auto-generated from CAPEX #{row.id} at {row.reward_pct or sc.default_capex_reward_pct}% (annual) / 12",
+        is_active=True,
+    )
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+
+    # Create month rows (constant)
+    start_idx = _ym_to_index(service.start_year, service.start_month)
+    term = int(sched["term"])
+    monthly = sched["monthly_amount"]
+
+    for i in range(term):
+        ym = _index_to_ym(start_idx + i)
+        db.add(
+            ScenarioServiceMonth(
+                service_id=service.id,
+                year=ym["year"],
+                month=ym["month"],
+                expense_amount=monthly,
+                cash_out=monthly,
+                tax_amount=Decimal(0),
+            )
+        )
+
+    # Link back to CAPEX
+    row.linked_service_id = service.id
+    db.add(row)
+    db.commit()
+
+    return GenerateResult(
+        linked_service_id=service.id,
+        months=term,
+        monthly_amount=monthly,
+    )
+
+
+@router.post(
+    "/{scenario_id}/capex/{item_id}/generate/boq",
+    response_model=GenerateResult,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate a BOQ line from CAPEX (Annual return% / 12 → constant monthly revenue, repeated for term)",
+)
+def generate_boq_from_capex(
+    scenario_id: int = Path(..., ge=1),
+    item_id: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    sc = _ensure_scenario(db, scenario_id)
+    row = db.get(ScenarioCapex, item_id)
+    if not row or row.scenario_id != scenario_id:
+        raise HTTPException(status_code=404, detail="CAPEX item not found")
+
+    # Idempotence
+    if row.linked_boq_item_id:
+        return GenerateResult(linked_boq_item_id=row.linked_boq_item_id)
+
+    sched = _compute_return_schedule_excel_monthly(sc, row)
+
+    # Create BOQ item (monthly revenue)
+    boq = ScenarioBOQItem(
+        scenario_id=scenario_id,
+        section="Services",
+        item_name=f"CAPEX return – {row.asset_name or f'CAPEX #{row.id}'}",
+        unit="month",
+        quantity=Decimal(sched["term"]),                  # total months
+        unit_price=sched["monthly_amount"],               # price per month (constant)
+        unit_cogs=None,
+        frequency="monthly",
+        start_year=int(sched["start_year"]),
+        start_month=int(sched["start_month"]),
+        months=int(sched["term"]),
+        formulation_id=None,
+        price_escalation_policy_id=None,
+        product_id=None,
+        price_term=None,
+        is_active=True,
+        notes=f"Auto-generated from CAPEX #{row.id} at {row.reward_pct or sc.default_capex_reward_pct}% (annual) / 12",
+        category=None,
+    )
+    db.add(boq)
+    db.commit()
+    db.refresh(boq)
+
+    # Link back to CAPEX
+    row.linked_boq_item_id = boq.id
+    db.add(row)
+    db.commit()
+
+    return GenerateResult(
+        linked_boq_item_id=boq.id,
+        months=int(sched["term"]),
+        monthly_amount=sched["monthly_amount"],
+    )
