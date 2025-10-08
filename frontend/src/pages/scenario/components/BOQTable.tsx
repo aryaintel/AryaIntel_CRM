@@ -65,7 +65,7 @@ type BestPriceResp = {
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
-  price_term?: PriceTerm | null; // backend should return this
+  price_term?: PriceTerm | null;
 };
 
 /* ---------- Utils ---------- */
@@ -528,6 +528,47 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     e.stopPropagation();
   }
 
+  /* ---------- Best Price helpers ---------- */
+  function singleMonthWindow(r: { start_year?: number | null; start_month?: number | null }) {
+    const startISO = toISODateYYYYMM01(r.start_year ?? null, r.start_month ?? null);
+    if (!startISO) return { on: null as string | null };
+    return { on: startISO };
+  }
+
+  async function fetchBestPrice(productId: number, onISO?: string | null) {
+    const q = new URLSearchParams();
+    if (onISO) q.set("on", onISO);
+    return apiGet<BestPriceResp>(
+      `/api/products/${productId}/best-price${q.toString() ? `?${q.toString()}` : ""}`
+    );
+  }
+
+  async function refreshBestPriceForRow(rowId: number) {
+    const row = rows.find((x) => x.id === rowId);
+    if (!row?.product_id) return;
+    try {
+      const { on } = singleMonthWindow(row);
+      const price = await fetchBestPrice(row.product_id, on);
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId
+            ? {
+                ...x,
+                unit_price: Number(price.unit_price),
+                price_term: (price.price_term ??
+                  x.price_term ??
+                  (x.category as PriceTerm | null) ??
+                  null) as PriceTerm | null,
+              }
+            : x
+        )
+      );
+    } catch {
+      /* silent */
+    }
+  }
+
+  /* ---------- load() with PB sync for linked rows ---------- */
   async function load() {
     setLoading(true);
     setErr(null);
@@ -540,7 +581,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       })) as BOQItem[];
       setRows(norm);
 
-      // backfill product cache + seed rowFamilyId only if not set
+      // Prefetch products for cache
       const ids = Array.from(
         new Set(norm.map((r) => r.product_id).filter((v): v is number => typeof v === "number"))
       ).filter((id) => !(id in productCache));
@@ -558,7 +599,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         setProductCache((prev) => ({ ...prev, ...fetched }));
       }
 
-      // seed family per row if empty (one-time default from product)
+      // Seed family per row if empty (one-time default from product)
       setRowFamilyId((prev) => {
         const next = { ...prev };
         for (const r of norm) {
@@ -571,16 +612,185 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         }
         return next;
       });
+
+      // NEW: sync Unit Price + Price Term from Price Book for rows that already have a product
+      await Promise.all(
+        norm
+          .filter((r) => !!r.product_id)
+          .map(async (r) => {
+            try {
+              const { on } = singleMonthWindow(r);
+              const price = await fetchBestPrice(r.product_id!, on);
+              setRows((prev) =>
+                prev.map((x) =>
+                  x.id === r.id
+                    ? {
+                        ...x,
+                        unit_price: Number(price.unit_price),
+                        price_term: (price.price_term ??
+                          x.price_term ??
+                          (x.category as PriceTerm | null) ??
+                          null) as PriceTerm | null,
+                      }
+                    : x
+                )
+              );
+            } catch {
+              /* keep existing values */
+            }
+          })
+      );
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e?.message || "Failed to load BOQ.");
     } finally {
       setLoading(false);
     }
   }
+
   useEffect(() => {
     if (scenarioId) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scenarioId]);
+
+  /* ---------- product helpers for selection paths ---------- */
+  function productOf(id?: number | null): Product | undefined {
+    if (!id || typeof id !== "number") return undefined;
+    return productCache[id];
+  }
+
+  async function applyProductToDraft(p: Product) {
+    if (!draft) return;
+    setProductCache((prev) => ({ ...prev, [p.id]: p }));
+
+    const nextDraft: BOQItem = {
+      ...draft,
+      product_id: p.id,
+      item_name: `${p.code} — ${p.name}`,
+      unit: p.uom || draft.unit || "",
+    };
+
+    try {
+      const { on } = singleMonthWindow(nextDraft);
+      const price = await fetchBestPrice(p.id, on);
+      nextDraft.unit_price = Number(price.unit_price);
+      nextDraft.price_term =
+        (price.price_term ??
+          nextDraft.price_term ??
+          (nextDraft.category as PriceTerm | null) ??
+          null) as PriceTerm | null;
+    } catch {
+      nextDraft.unit_price = p.base_price != null ? Number(p.base_price) : 0;
+    }
+
+    setDraft(nextDraft);
+    if (p.product_family_id && !draftFamilyId) setDraftFamilyId(p.product_family_id);
+  }
+
+  async function applyProductToRow(rowId: number, p: Product) {
+    setProductCache((prev) => ({ ...prev, [p.id]: p }));
+    if (p.product_family_id) {
+      setRowFamilyId((prev) => ({ ...prev, [rowId]: p.product_family_id! }));
+    }
+
+    const current = rows.find((x) => x.id === rowId);
+    if (!current) return;
+
+    setRows((prev) =>
+      prev.map((x) =>
+        x.id === rowId
+          ? {
+              ...x,
+              product_id: p.id,
+              item_name: `${p.code} — ${p.name}`,
+              unit: p.uom || x.unit || "",
+            }
+          : x
+      )
+    );
+
+    try {
+      const { on } = singleMonthWindow(current);
+      const price = await fetchBestPrice(p.id, on);
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId
+            ? {
+                ...x,
+                unit_price: Number(price.unit_price),
+                price_term: (price.price_term ??
+                  x.price_term ??
+                  (x.category as PriceTerm | null) ??
+                  null) as PriceTerm | null,
+              }
+            : x
+        )
+      );
+    } catch {
+      setRows((prev) =>
+        prev.map((x) =>
+          x.id === rowId ? { ...x, unit_price: p.base_price != null ? Number(p.base_price) : 0 } : x
+        )
+      );
+    }
+  }
+
+  /* ========================================================= */
+
+  const cols: ColKey[] = [
+    "family",
+    "product",
+    "price_term",
+    "uom",
+    "qty",
+    "unit_price",
+    "unit_cogs",
+    "freq",
+    "start",
+    "duration",
+    "active",
+    "actions",
+  ];
+
+  function Th({
+    k,
+    children,
+    align = "left",
+  }: {
+    k: ColKey;
+    children: React.ReactNode;
+    align?: "left" | "right" | "center";
+  }) {
+    return (
+      <th
+        className={cls(
+          "px-3 py-2 bg-gray-50 border-b relative select-none",
+          align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left"
+        )}
+        style={{ width: colWidths[k], minWidth: colWidths[k] }}
+      >
+        <div className="pr-2">{children}</div>
+        <span
+          onMouseDown={(e) => beginResize(k, e)}
+          className="absolute right-0 top-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-indigo-300/60 z-10"
+          title="Drag to resize"
+        />
+      </th>
+    );
+  }
+
+  // --- Family value precedence: manual (rowFamilyId) -> product.family -> ""
+  function getFamilyValueForRow(r: BOQItem): number | "" {
+    if (r.id != null && Object.prototype.hasOwnProperty.call(rowFamilyId, r.id)) {
+      return rowFamilyId[r.id]!;
+    }
+    const pf = r.product_id ? productOf(r.product_id)?.product_family_id : undefined;
+    return pf ?? "";
+  }
+
+  // helper to compute the display value for price_term (so it never looks blank)
+  function resolveDisplayTerm(item: BOQItem): PriceTerm | "" {
+    return (item.price_term ?? (item.category as PriceTerm | null) ?? "") as PriceTerm | "";
+  }
 
   /* ======= Monthly Preview ======= */
   type MonthAgg = { revenue: number; cogs: number; gm: number };
@@ -653,175 +863,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     return { rows: rowsOut, totals };
   }, [rows]);
 
-  /* ---------- product helpers ---------- */
-  function productOf(id?: number | null): Product | undefined {
-    if (!id || typeof id !== "number") return undefined;
-    return productCache[id];
-  }
-
-  function singleMonthWindow(r: { start_year?: number | null; start_month?: number | null }) {
-    const startISO = toISODateYYYYMM01(r.start_year ?? null, r.start_month ?? null);
-    if (!startISO) return { on: null as string | null };
-    return { on: startISO };
-  }
-
-  // IMPORTANT: use 'on=YYYY-MM-01' to match backend contract
-  async function fetchBestPrice(productId: number, onISO?: string | null) {
-    const q = new URLSearchParams();
-    if (onISO) q.set("on", onISO);
-    return apiGet<BestPriceResp>(
-      `/api/products/${productId}/best-price${q.toString() ? `?${q.toString()}` : ""}`
-    );
-  }
-
-  async function refreshBestPriceForRow(rowId: number) {
-    const row = rows.find((x) => x.id === rowId);
-    if (!row?.product_id) return;
-    try {
-      const { on } = singleMonthWindow(row);
-      const price = await fetchBestPrice(row.product_id, on);
-      setRows((prev) =>
-        prev.map((x) =>
-          x.id === rowId
-            ? {
-                ...x,
-                unit_price: Number(price.unit_price),
-                price_term: price.price_term ?? x.price_term ?? null,
-              }
-            : x
-        )
-      );
-    } catch {
-      /* silent */
-    }
-  }
-
-  /* ---------- selection helpers ---------- */
-  async function applyProductToDraft(p: Product) {
-    if (!draft) return;
-    setProductCache((prev) => ({ ...prev, [p.id]: p }));
-
-    const nextDraft: BOQItem = {
-      ...draft,
-      product_id: p.id,
-      item_name: `${p.code} — ${p.name}`,
-      unit: p.uom || draft.unit || "",
-    };
-
-    try {
-      const { on } = singleMonthWindow(nextDraft);
-      const price = await fetchBestPrice(p.id, on);
-      nextDraft.unit_price = Number(price.unit_price);
-      if (price.price_term) nextDraft.price_term = price.price_term;
-    } catch {
-      nextDraft.unit_price = p.base_price != null ? Number(p.base_price) : 0;
-    }
-
-    setDraft(nextDraft);
-    // draft row’s family UI = product family (helps persistence after save)
-    if (p.product_family_id && !draftFamilyId) setDraftFamilyId(p.product_family_id);
-  }
-
-  async function applyProductToRow(rowId: number, p: Product) {
-    setProductCache((prev) => ({ ...prev, [p.id]: p }));
-
-    // when product changes, adopt its family once
-    if (p.product_family_id) {
-      setRowFamilyId((prev) => ({ ...prev, [rowId]: p.product_family_id! }));
-    }
-
-    const current = rows.find((x) => x.id === rowId);
-    if (!current) return;
-
-    setRows((prev) =>
-      prev.map((x) =>
-        x.id === rowId
-          ? {
-              ...x,
-              product_id: p.id,
-              item_name: `${p.code} — ${p.name}`,
-              unit: p.uom || x.unit || "",
-            }
-          : x
-      )
-    );
-
-    try {
-      const { on } = singleMonthWindow(current);
-      const price = await fetchBestPrice(p.id, on);
-      setRows((prev) =>
-        prev.map((x) =>
-          x.id === rowId
-            ? {
-                ...x,
-                unit_price: Number(price.unit_price),
-                price_term: price.price_term ?? x.price_term ?? null,
-              }
-            : x
-        )
-      );
-    } catch {
-      setRows((prev) =>
-        prev.map((x) =>
-          x.id === rowId ? { ...x, unit_price: p.base_price != null ? Number(p.base_price) : 0 } : x
-        )
-      );
-    }
-  }
-
-  /* ========================================================= */
-
-  const cols: ColKey[] = [
-    "family",
-    "product",
-    "price_term",
-    "uom",
-    "qty",
-    "unit_price",
-    "unit_cogs",
-    "freq",
-    "start",
-    "duration",
-    "active",
-    "actions",
-  ];
-
-  function Th({
-    k,
-    children,
-    align = "left",
-  }: {
-    k: ColKey;
-    children: React.ReactNode;
-    align?: "left" | "right" | "center";
-  }) {
-    return (
-      <th
-        className={cls(
-          "px-3 py-2 bg-gray-50 border-b relative select-none",
-          align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left"
-        )}
-        style={{ width: colWidths[k], minWidth: colWidths[k] }}
-      >
-        <div className="pr-2">{children}</div>
-        <span
-          onMouseDown={(e) => beginResize(k, e)}
-          className="absolute right-0 top-0 h-full w-2 cursor-col-resize bg-transparent hover:bg-indigo-300/60 z-10"
-          title="Drag to resize"
-        />
-      </th>
-    );
-  }
-
-  // --- Family value precedence: manual (rowFamilyId) -> product.family -> ""
-  function getFamilyValueForRow(r: BOQItem): number | "" {
-    if (r.id != null && Object.prototype.hasOwnProperty.call(rowFamilyId, r.id)) {
-      return rowFamilyId[r.id]!;
-    }
-    const pf = r.product_id ? productOf(r.product_id)?.product_family_id : undefined;
-    return pf ?? "";
-  }
-
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -857,7 +898,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                 product_id: null,
                 item_name: "",
                 unit: "",
-                price_term: null, // will fill when product picked
+                price_term: null,
                 quantity: 0,
                 unit_price: 0,
                 unit_cogs: 0,
@@ -984,13 +1025,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                   />
                 </td>
 
+                {/* Price Term — show actual derived value when product is selected */}
                 <td className="px-3 py-2">
                   <select
                     className={cls(
                       "w-full px-2 py-1 rounded border border-gray-300",
                       draft.product_id ? "bg-gray-100 text-gray-500 cursor-not-allowed" : ""
                     )}
-                    value={draft.price_term ?? ""}
+                    value={
+                      draft.product_id ? resolveDisplayTerm(draft) || "" : (draft.price_term ?? "")
+                    }
                     onChange={(e) =>
                       setDraft({
                         ...draft,
@@ -999,16 +1043,14 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                           : null,
                       })
                     }
-                    disabled={!!draft.product_id} // FREEZE when product picked
+                    disabled={!!draft.product_id}
                     title={
                       draft.product_id
-                        ? "Derived from Price Book (change by editing Price Book)"
+                        ? "Derived from Price Book (non-editable)"
                         : "Select price term"
                     }
                   >
-                    <option value="" disabled>
-                      {draft.product_id ? "— derived —" : "Select…"}
-                    </option>
+                    {!draft.product_id && <option value="">Select…</option>}
                     {PRICE_TERMS_OPTIONS.map((c) => (
                       <option key={c} value={c}>
                         {c}
@@ -1089,7 +1131,11 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                           const { on } = singleMonthWindow(next);
                           const price = await fetchBestPrice(next.product_id!, on);
                           next.unit_price = Number(price.unit_price);
-                          if (price.price_term) next.price_term = price.price_term;
+                          next.price_term =
+                            (price.price_term ??
+                              next.price_term ??
+                              (next.category as PriceTerm | null) ??
+                              null) as PriceTerm | null;
                         } catch {}
                       }
                       setDraft(next);
@@ -1181,7 +1227,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
 
             {/* ------ EXISTING ROWS ------ */}
             {rows.map((r) => {
-              const linkedProd = productOf(r.product_id ?? undefined);
               const famValue = getFamilyValueForRow(r);
 
               return (
@@ -1219,25 +1264,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       onPick={(p) => applyProductToRow(r.id!, p)}
                       placeholder="Search code or name…"
                     />
-                    {!!r.product_id && (
-                      <div className="text-xs text-gray-500 mt-1">
-                        linked:{" "}
-                        <b title={linkedProd?.code || `#${r.product_id}`}>
-                          {linkedProd?.code || `#${r.product_id}`}
-                        </b>{" "}
-                        • <span title={linkedProd?.name || ""}>{linkedProd?.name || ""}</span>
-                      </div>
-                    )}
                   </td>
 
-                  {/* Price Term (FREEZE when product linked) */}
+                  {/* Price Term — PB değeri görünür, edit kapalı */}
                   <td className="px-3 py-2">
                     <select
                       className={cls(
                         "w-full px-2 py-1 rounded border border-gray-300",
                         r.product_id ? "bg-gray-100 text-gray-500 cursor-not-allowed" : ""
                       )}
-                      value={r.price_term ?? ""}
+                      value={r.product_id ? resolveDisplayTerm(r) || "" : (r.price_term ?? "")}
                       onChange={(e) =>
                         setRows((p) =>
                           p.map((x) =>
@@ -1255,13 +1291,11 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                       disabled={!!r.product_id}
                       title={
                         r.product_id
-                          ? "Derived from Price Book (change by editing Price Book)"
+                          ? "Derived from Price Book (non-editable)"
                           : "Select price term"
                       }
                     >
-                      <option value="" disabled>
-                        {r.product_id ? "— derived —" : "Select…"}
-                      </option>
+                      {!r.product_id && <option value="">Select…</option>}
                       {PRICE_TERMS_OPTIONS.map((c) => (
                         <option key={c} value={c}>
                           {c}
@@ -1399,8 +1433,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                                 (upd as any).price_term ?? (upd as any).price_terms ?? null,
                             };
                             setRows((p) => p.map((x) => (x.id === r.id ? updNorm : x)));
-
-                            // keep existing rowFamilyId as-is (user choice persists)
                             onChanged?.();
                           } catch (e: any) {
                             alert(e?.response?.data?.detail || e?.message || "Update failed.");
