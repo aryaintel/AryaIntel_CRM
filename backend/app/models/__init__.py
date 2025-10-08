@@ -14,7 +14,6 @@ from sqlalchemy import (
     Boolean,
 )
 from sqlalchemy.orm import declarative_base, relationship
-from ..core.config import engine
 
 Base = declarative_base()
 
@@ -113,6 +112,8 @@ class Product(Base):
     attributes = relationship("ProductAttribute", back_populates="product", cascade="all, delete-orphan", lazy="selectin")
     media = relationship("ProductMedia", back_populates="product", cascade="all, delete-orphan", lazy="selectin")
     price_entries = relationship("PriceBookEntry", back_populates="product", cascade="all, delete-orphan", lazy="selectin")
+    # NEW: cost entries
+    cost_entries = relationship("CostBookEntry", back_populates="product", cascade="all, delete-orphan", lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("code", name="uix_product_code"),
@@ -150,6 +151,20 @@ class ProductMedia(Base):
     __table_args__ = (Index("ix_product_media_product", "product_id"),)
 
 
+# =========================
+# Price Terms (EXW/FOB/... snapshot + FK)
+# =========================
+class PriceTerm(Base):
+    __tablename__ = "price_terms"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, nullable=False)            # e.g., EXW, FOB
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    sort_order = Column(Integer, nullable=False, default=0)
+
+
 class PriceBook(Base):
     __tablename__ = "price_books"
 
@@ -184,12 +199,71 @@ class PriceBookEntry(Base):
     list_price = Column(Numeric(18, 4), nullable=False, default=0)
     discount_pct = Column(Numeric(9, 4), nullable=True)
 
+    # NEW (in DB): term snapshot + normalized FK
+    price_term = Column(String, nullable=True)
+    price_term_id = Column(Integer, ForeignKey("price_terms.id", ondelete="SET NULL"), nullable=True)
+
     book = relationship("PriceBook", back_populates="entries", lazy="selectin")
     product = relationship("Product", back_populates="price_entries", lazy="selectin")
+    term = relationship("PriceTerm", lazy="selectin")
 
     __table_args__ = (
         Index("ix_pbe_book", "price_book_id"),
         Index("ix_pbe_product", "product_id"),
+    )
+
+
+# =========================
+# Cost Books (NEW — mirrors Price Books, for unit costs)
+# =========================
+class CostBook(Base):
+    __tablename__ = "cost_books"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False)
+    currency = Column(String(3), nullable=False, default="USD")
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
+    is_default = Column(Boolean, nullable=False, default=False, server_default="0")
+
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    entries = relationship("CostBookEntry", back_populates="book", cascade="all, delete-orphan", lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_cost_books_active", "is_active"),
+        Index("ix_cost_books_default", "is_default"),
+    )
+
+
+class CostBookEntry(Base):
+    __tablename__ = "cost_book_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cost_book_id = Column(Integer, ForeignKey("cost_books.id", ondelete="CASCADE"), nullable=False)
+    product_id = Column(Integer, ForeignKey("products.id", ondelete="CASCADE"), nullable=False)
+
+    valid_from = Column(Date, nullable=True)
+    valid_to = Column(Date, nullable=True)
+
+    unit_cost = Column(Numeric(18, 4), nullable=False)  # stored in book currency
+
+    # snapshot + FK (optional), for parity with price terms
+    cost_term = Column(String, nullable=True)
+    cost_term_id = Column(Integer, ForeignKey("price_terms.id", ondelete="SET NULL"), nullable=True)
+
+    notes = Column(Text, nullable=True)
+
+    book = relationship("CostBook", back_populates="entries", lazy="selectin")
+    product = relationship("Product", back_populates="cost_entries", lazy="selectin")
+    term = relationship("PriceTerm", lazy="selectin")
+
+    __table_args__ = (
+        Index("ix_cbe_book", "cost_book_id"),
+        Index("ix_cbe_product", "product_id"),
+        # helpful resolver index (product + term + window)
+        Index("ix_cbe_lookup", "product_id", "cost_term_id", "valid_from", "valid_to"),
     )
 
 
@@ -397,7 +471,8 @@ class Account(Base):
     ownership = Column(String(20), nullable=True)
     description = Column(Text, nullable=True)
 
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    # RESTRICT yerine SET NULL + NOT NULL çakışmasını çözmek için RESTRICT
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     created_at = Column(DateTime, server_default=func.now())
 
     owner = relationship("User", lazy="selectin")
@@ -409,7 +484,8 @@ class Contact(Base):
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
 
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
-    owner_id   = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    # RESTRICT
+    owner_id   = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
     name  = Column(String, nullable=False)
     email = Column(String, nullable=True)
@@ -431,7 +507,8 @@ class Lead(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    owner_id  = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    # RESTRICT
+    owner_id  = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
     name    = Column(String, nullable=False)
     company = Column(String, nullable=True)
@@ -486,12 +563,14 @@ class Opportunity(Base):
     id = Column(Integer, primary_key=True, index=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
     account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=False)
+    # RESTRICT
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
 
     name = Column(String, nullable=False)
     amount = Column(Integer, nullable=True)
     currency = Column(String, nullable=True)
-    stage_id = Column(Integer, ForeignKey("stages.id", ondelete="SET NULL"), nullable=False)
+    # RESTRICT
+    stage_id = Column(Integer, ForeignKey("stages.id", ondelete="RESTRICT"), nullable=False)
 
     expected_close_date = Column(Date, nullable=True)
     source = Column(String, nullable=True)
@@ -828,7 +907,7 @@ class ScenarioTaxRule(Base):
 
 
 # =========================
-# Scenario Rebates (NEW)f
+# Scenario Rebates (NEW)
 # =========================
 class ScenarioRebate(Base):
     __tablename__ = "scenario_rebates"
@@ -922,9 +1001,3 @@ class ScenarioRebateLump(Base):
         Index("ix_lumps_rebate", "rebate_id"),
         Index("ix_lumps_period", "year", "month"),
     )
-
-
-# =========================
-# Create all (idempotent)
-# =========================
-Base.metadata.create_all(bind=engine)
