@@ -1,5 +1,7 @@
 from typing import List, Optional
 from decimal import Decimal
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Path
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
@@ -97,6 +99,65 @@ def _ensure_scenario(db: Session, scenario_id: int) -> Scenario:
     return sc
 
 
+# --- Price term resolver (SQLAlchemy üzerinden, sadece code döner) ---
+from sqlalchemy import text as _text
+from sqlalchemy.orm import Session as _Session
+
+def _best_term_code_sa(db: _Session, product_id: int, on_date: str) -> Optional[str]:
+    # 1) default book + tarih aralığı
+    q1 = db.execute(_text("""
+        SELECT pt.code
+        FROM price_book_entries e
+        JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
+        WHERE e.product_id = :pid
+          AND e.is_active = 1
+          AND b.is_active = 1
+          AND b.is_default = 1
+          AND (e.valid_from IS NULL OR date(e.valid_from) <= date(:on))
+          AND (e.valid_to   IS NULL OR date(e.valid_to)   >= date(:on))
+        ORDER BY date(IFNULL(e.valid_from,'0001-01-01')) DESC, e.id DESC
+        LIMIT 1
+    """), {"pid": product_id, "on": on_date}).scalar()
+    if q1:
+        return q1
+
+    # 2) herhangi aktif book + tarih aralığı (default öne)
+    q2 = db.execute(_text("""
+        SELECT pt.code
+        FROM price_book_entries e
+        JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
+        WHERE e.product_id = :pid
+          AND e.is_active = 1
+          AND b.is_active = 1
+          AND (e.valid_from IS NULL OR date(e.valid_from) <= date(:on))
+          AND (e.valid_to   IS NULL OR date(e.valid_to)   >= date(:on))
+        ORDER BY b.is_default DESC,
+                 date(IFNULL(e.valid_from,'0001-01-01')) DESC,
+                 e.id DESC
+        LIMIT 1
+    """), {"pid": product_id, "on": on_date}).scalar()
+    if q2:
+        return q2
+
+    # 3) tarih penceresini yok say: en yeni aktif entry
+    q3 = db.execute(_text("""
+        SELECT pt.code
+        FROM price_book_entries e
+        JOIN price_books b ON b.id = e.price_book_id
+        LEFT JOIN price_terms pt ON pt.id = e.price_term_id
+        WHERE e.product_id = :pid
+          AND e.is_active = 1
+          AND b.is_active = 1
+        ORDER BY b.is_default DESC,
+                 date(IFNULL(e.valid_from,'0001-01-01')) DESC,
+                 e.id DESC
+        LIMIT 1
+    """), {"pid": product_id}).scalar()
+    return q3
+
+
 # =========================
 # Routes
 # =========================
@@ -117,6 +178,15 @@ def list_boq_items(
         stmt = stmt.where(ScenarioBOQItem.is_active.is_(True))
     stmt = stmt.order_by(ScenarioBOQItem.id.asc())
     rows = db.execute(stmt).scalars().all()
+
+    # price_term snapshot boşsa response'ta güncel code ile doldur
+    today = date.today().isoformat()
+    for r in rows:
+        if r.price_term is None and r.product_id is not None:
+            code = _best_term_code_sa(db, int(r.product_id), today)
+            if code:
+                r.price_term = code
+
     return rows
 
 
@@ -133,6 +203,12 @@ def create_boq_item(
     _user=Depends(get_current_user),
 ):
     _ensure_scenario(db, scenario_id)
+
+    # Eğer price_term verilmemiş ve ürün bağlıysa snapshot'ı otomatik set et
+    snap_term = payload.price_term
+    if (snap_term is None) and payload.product_id:
+        snap_term = _best_term_code_sa(db, int(payload.product_id), date.today().isoformat())
+
     row = ScenarioBOQItem(
         scenario_id=scenario_id,
         section=payload.section,
@@ -146,7 +222,7 @@ def create_boq_item(
         start_month=payload.start_month,
         months=payload.months,
         product_id=payload.product_id,   # NEW
-        price_term=payload.price_term,   # NEW
+        price_term=snap_term,            # snapshot (EXW vb.)
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -173,8 +249,18 @@ def update_boq_item(
     row = db.get(ScenarioBOQItem, item_id)
     if not row or row.scenario_id != scenario_id:
         raise HTTPException(status_code=404, detail="BOQ item not found")
-    for k, v in payload.dict().items():
+
+    # snapshot kuralı: gönderilen boş ise ve product_id varsa güncel kodu ata
+    incoming = payload.dict()
+    snap_term = incoming.get("price_term")
+    prod_id = incoming.get("product_id") or row.product_id
+    if snap_term is None and prod_id:
+        snap_term = _best_term_code_sa(db, int(prod_id), date.today().isoformat())
+    incoming["price_term"] = snap_term
+
+    for k, v in incoming.items():
         setattr(row, k, v)
+
     db.add(row)
     db.commit()
     db.refresh(row)
@@ -214,7 +300,12 @@ def bulk_insert_boq_items(
 ):
     _ensure_scenario(db, scenario_id)
     new_rows: List[ScenarioBOQItem] = []
+    today = date.today().isoformat()
     for item in payload.items:
+        snap_term = item.price_term
+        if snap_term is None and item.product_id:
+            snap_term = _best_term_code_sa(db, int(item.product_id), today)
+
         new_rows.append(
             ScenarioBOQItem(
                 scenario_id=scenario_id,
@@ -229,7 +320,7 @@ def bulk_insert_boq_items(
                 start_month=item.start_month,
                 months=item.months,
                 product_id=item.product_id,     # NEW
-                price_term=item.price_term,     # NEW
+                price_term=snap_term,           # NEW snapshot
                 is_active=item.is_active,
                 notes=item.notes,
                 category=item.category,
@@ -419,6 +510,15 @@ def list_boq_items_2(
         q = q.filter(_ScenarioBOQItem.is_active == bool(active))
     q = q.order_by(_ScenarioBOQItem.id.desc())
     items = q.all()
+
+    # price_term boşsa response'ta güncel code ile doldur
+    today = date.today().isoformat()
+    for r in items:
+        if r.price_term is None and r.product_id is not None:
+            code = _best_term_code_sa(db, int(r.product_id), today)
+            if code:
+                r.price_term = code
+
     return items
 
 @router2.post("/scenarios/{scenario_id}/boq", status_code=_status.HTTP_201_CREATED, response_model=BOQItemOut2)
@@ -431,6 +531,10 @@ def create_boq_item_2(
 ):
     _ensure_scenario2(db, scenario_id)
     sy, sm = _ym(payload.start_year, payload.start_month)
+
+    snap_term = payload.price_term
+    if snap_term is None and payload.product_id:
+        snap_term = _best_term_code_sa(db, int(payload.product_id), date.today().isoformat())
 
     item = _ScenarioBOQItem(
         scenario_id=scenario_id,
@@ -447,7 +551,7 @@ def create_boq_item_2(
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
         product_id=payload.product_id,   # NEW
-        price_term=payload.price_term,   # NEW
+        price_term=snap_term,            # NEW snapshot
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
@@ -473,6 +577,12 @@ def update_boq_item_2(
 
     sy, sm = _ym(payload.start_year, payload.start_month)
 
+    # snapshot kuralı
+    snap_term = payload.price_term
+    prod_id = payload.product_id or item.product_id
+    if snap_term is None and prod_id:
+        snap_term = _best_term_code_sa(db, int(prod_id), date.today().isoformat())
+
     for k, v in dict(
         section=payload.section,
         item_name=payload.item_name,
@@ -487,7 +597,7 @@ def update_boq_item_2(
         formulation_id=payload.formulation_id,
         price_escalation_policy_id=payload.price_escalation_policy_id,
         product_id=payload.product_id,     # NEW
-        price_term=payload.price_term,     # NEW
+        price_term=snap_term,               # NEW
         is_active=payload.is_active,
         notes=payload.notes,
         category=payload.category,
