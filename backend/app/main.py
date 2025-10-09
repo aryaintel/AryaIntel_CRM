@@ -13,7 +13,7 @@ from app.api.rise_fall_api import router as rise_fall_router  # keep absolute to
 from app.api.rebates_runtime import router as rebates_runtime_router
 from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
 from app.api.price_terms import router as price_terms_router
-
+from .api import cost_books_api
 # Core modules
 from .api import (
     auth,
@@ -196,6 +196,7 @@ app.include_router(rise_fall_router)
 # Products, Price Books, Cost Books
 app.include_router(products_router)               # products + price books
 app.include_router(cost_books_router)             # NEW: /api/cost-books/... (CRUD)
+app.include_router(cost_books_api.router_products) # ✅ NEW: /api/products/{id}/best-cost
 
 # Rebates runtime (preview endpoint used by Summary & others)
 app.include_router(rebates_runtime_router)
@@ -203,3 +204,4 @@ app.include_router(rebates_runtime_router)
 # Debug & tooling
 app.include_router(db_schema_router)
 app.include_router(price_terms_router)
+

@@ -96,7 +96,7 @@ function tabBtnClass(active: boolean, disabled?: boolean) {
     active
       ? "bg-indigo-600 text-white border-indigo-600 shadow font-semibold"
       : "bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200",
-    (!active && disabled) && "opacity-50 cursor-not-allowed"
+    !active && disabled && "opacity-50 cursor-not-allowed"
   );
 }
 const withTimeout = <T,>(p: Promise<T>, ms = 8000): Promise<T> =>
@@ -133,7 +133,7 @@ export default function ScenarioPage() {
       "pl", "summary", "boq", "twc", "index", "escalation",
       "rebates", "risefall", "capex", "fx", "tax", "services",
     ]);
-    return (allowed.has(t as Tab) ? (t as Tab) : "boq");
+    return allowed.has(t as Tab) ? (t as Tab) : "boq";
   }, [sp]);
 
   function setTabRaw(next: Tab) {
@@ -418,6 +418,7 @@ export default function ScenarioPage() {
             <div className="rounded border p-4 bg-white">
               <BOQTable
                 scenarioId={id}
+                isReady={!!flow?.boq_ready}
                 onChanged={loadAll}
                 onMarkedReady={async () => {
                   await loadAll();
@@ -478,12 +479,12 @@ export default function ScenarioPage() {
             </div>
           )}
 
-         {tab === "risefall" && (
+          {tab === "risefall" && (
             <div className="rounded border p-4 bg-white">
               <RiseAndFallTab
                 scenarioId={id}
                 onMarkedReady={() => setTabRaw("capex")}
-    />
+              />
             </div>
           )}
 

@@ -65,7 +65,7 @@ type BestPriceResp = {
   product_id: number;
   price_book_id: number;
   price_book_entry_id: number;
-  unit_price: number;
+  unit_price: number | string;
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
@@ -75,12 +75,16 @@ type BestPriceResp = {
   price_term_id?: number | null; // important for mapping
 };
 
-// === NEW: mirror of best price, but for Cost Books ===
+// === NEW: mirror-ish of best price, but for Cost Books ===
 type BestCostResp = {
   product_id: number;
   cost_book_id: number;
   cost_book_entry_id: number;
-  unit_cost: number;
+  unit_cost?: number | string | null;
+  unit_cogs?: number | string | null;
+  cost?: number | string | null;
+  cogs?: number | string | null;
+  price?: number | string | null; // some backends mirror "price" key
   currency?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
@@ -101,6 +105,25 @@ type PriceTermsListResp = { items: PriceTermRef[] };
 /* ---------- Utils ---------- */
 function cls(...a: (string | false | undefined)[]) {
   return a.filter(Boolean).join(" ");
+}
+function parseLocaleNumber(v: any): number {
+  if (v == null) return 0;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v !== "string") return Number(v) || 0;
+  const s = v.trim().replace(/\s+/g, "");
+  const decMatch = s.match(/[^0-9](\d{1,2})$/);
+  if (decMatch) {
+    const decSepIndex = s.length - decMatch[0].length;
+    const intPart = s.slice(0, decSepIndex).replace(/[^0-9]/g, "");
+    const decPart = s.slice(decSepIndex + 1).replace(/[^0-9]/g, "");
+    return Number(`${intPart}.${decPart}`) || 0;
+  }
+  const cleaned = s.replace(/[^0-9.]/g, "");
+  return Number(cleaned) || 0;
+}
+function toNum(v: any): number {
+  const n = parseLocaleNumber(v);
+  return Number.isFinite(n) ? n : 0;
 }
 function num(v: any): number {
   const n = Number(v);
@@ -605,13 +628,64 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     );
   }
 
-  // NEW: Cost Book resolver
-  async function fetchBestCost(productId: number, onISO?: string | null) {
+  // ===== Robust Cost Book resolver with fallbacks & 404 swallow =====
+  let _loggedCostEndpointWarning = false;
+  async function fetchBestCost(productId: number, onISO?: string | null): Promise<BestCostResp | null> {
     const q = new URLSearchParams();
     if (onISO) q.set("on", onISO);
-    return apiGet<BestCostResp>(
-      `/api/products/${productId}/best-cost${q.toString() ? `?${q.toString()}` : ""}`
-    );
+
+    const candidates = [
+      `/api/products/${productId}/best-cost`,
+      `/api/products/${productId}/best-cogs`,
+      `/api/cost-books/best-cost?product_id=${productId}`,
+    ];
+
+    for (const base of candidates) {
+      const url = base.includes("?")
+        ? `${base}${q.toString() ? `&${q.toString()}` : ""}`
+        : `${base}${q.toString() ? `?${q.toString()}` : ""}`;
+      try {
+        return await apiGet<BestCostResp>(url);
+      } catch (e: any) {
+        const status = e?.response?.status;
+        if (status === 404) {
+          // try next pattern
+          continue;
+        }
+        if (!_loggedCostEndpointWarning) {
+          console.warn("best-cost fetch failed (non-404):", url, e);
+          _loggedCostEndpointWarning = true;
+        }
+        // non-404 should stop attempts
+        throw e;
+      }
+    }
+
+    if (!_loggedCostEndpointWarning) {
+      console.warn(
+        "No Cost Book endpoint found (404 on all known candidates). " +
+        "Unit COGS will remain user-editable only."
+      );
+      _loggedCostEndpointWarning = true;
+    }
+    return null;
+  }
+
+  function pickUnitCost(bc: any): number {
+    if (!bc) return 0;
+    // try common keys in order
+    const candidates = [
+      bc?.unit_cost,
+      bc?.unit_cogs,
+      bc?.cost,
+      bc?.cogs,
+      bc?.price,
+    ];
+    for (const c of candidates) {
+      const n = toNum(c);
+      if (n !== 0 || c === 0 || c === "0" || c === "0,0" || c === "0.0") return n;
+    }
+    return 0;
   }
 
   function labelFromTermId(id?: number | null): string | null {
@@ -643,7 +717,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           price_term: r.price_term ?? r.price_terms ?? null,
           price_term_id: r.price_term_id ?? null,
         };
-        // If text missing but id present, map it to label for display
         if (!row.price_term && row.price_term_id) {
           row.price_term = labelFromTermId(row.price_term_id);
         }
@@ -678,12 +751,12 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           const prod =
             (r.product_id && (fetched[r.product_id] || productCache[r.product_id])) || undefined;
           const pf = prod?.product_family_id;
-          if (pf) next[r.id] = pf;
+        if (pf) next[r.id] = pf;
         }
         return next;
       });
 
-      // Sync Unit Price + Price Term from Price Book for rows that already have a product
+      // Sync Unit Price + Price Term from Price Book
       await Promise.all(
         norm
           .filter((r) => !!r.product_id)
@@ -697,7 +770,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                   x.id === r.id
                     ? {
                         ...x,
-                        unit_price: Number(bp.unit_price),
+                        unit_price: toNum(bp.unit_price),
                         price_term: label ?? x.price_term ?? null,
                         price_term_id: id ?? x.price_term_id ?? null,
                       }
@@ -710,7 +783,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           })
       );
 
-      // NEW: Sync Unit COGS from Cost Book for rows that already have a product
+      // Sync Unit COGS from Cost Book (robust/null-safe)
       await Promise.all(
         norm
           .filter((r) => !!r.product_id)
@@ -718,11 +791,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             try {
               const { on } = singleMonthWindow(r);
               const bc = await fetchBestCost(r.product_id!, on);
-              setRows((prev) =>
-                prev.map((x) =>
-                  x.id === r.id ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
-                )
-              );
+              if (bc) {
+                setRows((prev) =>
+                  prev.map((x) =>
+                    x.id === r.id ? { ...x, unit_cogs: pickUnitCost(bc) } : x
+                  )
+                );
+              }
             } catch {
               /* keep existing */
             }
@@ -761,18 +836,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       const { on } = singleMonthWindow(nextDraft);
       const bp = await fetchBestPrice(p.id, on);
       const { label, id } = normalizePriceTermFromBP(bp);
-      nextDraft.unit_price = Number(bp.unit_price);
+      nextDraft.unit_price = toNum(bp.unit_price);
       nextDraft.price_term = label ?? null;
       nextDraft.price_term_id = id ?? null;
 
-      // ALSO fetch unit COGS from Cost Book
       try {
         const bc = await fetchBestCost(p.id, on);
-        nextDraft.unit_cogs = Number(bc.unit_cost ?? 0);
+        if (bc) nextDraft.unit_cogs = pickUnitCost(bc);
       } catch { /* ignore */ }
     } catch {
       nextDraft.unit_price = p.base_price != null ? Number(p.base_price) : 0;
-      // leave unit_cogs as-is if cost lookup not available
     }
 
     setDraft(nextDraft);
@@ -810,7 +883,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           x.id === rowId
             ? {
                 ...x,
-                unit_price: Number(bp.unit_price),
+                unit_price: toNum(bp.unit_price),
                 price_term: label ?? x.price_term ?? null,
                 price_term_id: id ?? x.price_term_id ?? null,
               }
@@ -818,14 +891,15 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         )
       );
 
-      // ALSO pull Unit COGS from Cost Book
       try {
         const bc = await fetchBestCost(p.id, on);
-        setRows((prev) =>
-          prev.map((x) =>
-            x.id === rowId ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
-          )
-        );
+        if (bc) {
+          setRows((prev) =>
+            prev.map((x) =>
+              x.id === rowId ? { ...x, unit_cogs: pickUnitCost(bc) } : x
+            )
+          );
+        }
       } catch { /* ignore */ }
     } catch {
       setRows((prev) =>
@@ -889,7 +963,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
   }
 
   function resolveDisplayTerm(item: BOQItem): string | "" {
-    // prefer explicit label; if only id is present, map it
     if (item.price_term) return item.price_term;
     if (item.price_term_id) {
       const lbl = labelFromTermId(item.price_term_id);
@@ -1209,14 +1282,13 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                           const { on } = singleMonthWindow(next);
                           const bp = await fetchBestPrice(next.product_id!, on);
                           const { label, id } = normalizePriceTermFromBP(bp);
-                          next.unit_price = Number(bp.unit_price);
+                          next.unit_price = toNum(bp.unit_price);
                           next.price_term = label ?? null;
                           next.price_term_id = id ?? null;
 
-                          // ALSO refresh unit COGS when date changes
                           try {
                             const bc = await fetchBestCost(next.product_id!, on);
-                            next.unit_cogs = Number(bc.unit_cost ?? 0);
+                            if (bc) next.unit_cogs = pickUnitCost(bc);
                           } catch { /* ignore */ }
                         } catch {}
                       }
@@ -1440,19 +1512,20 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                             setRows((p) =>
                               p.map((x) =>
                                 x.id === r.id
-                                  ? { ...x, unit_price: Number(bp.unit_price), price_term: label ?? x.price_term ?? null, price_term_id: id ?? x.price_term_id ?? null }
+                                  ? { ...x, unit_price: toNum(bp.unit_price), price_term: label ?? x.price_term ?? null, price_term_id: id ?? x.price_term_id ?? null }
                                   : x
                               )
                             );
 
-                            // ALSO sync Unit COGS on date changes
                             try {
                               const bc = await fetchBestCost(r.product_id, on);
-                              setRows((p) =>
-                                p.map((x) =>
-                                  x.id === r.id ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
-                                )
-                              );
+                              if (bc) {
+                                setRows((p) =>
+                                  p.map((x) =>
+                                    x.id === r.id ? { ...x, unit_cogs: pickUnitCost(bc) } : x
+                                  )
+                                );
+                              }
                             } catch { /* ignore */ }
                           } catch { /* ignore */ }
                         }

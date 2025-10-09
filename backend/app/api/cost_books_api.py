@@ -8,13 +8,18 @@ from typing import List, Optional, Generator
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy import and_, or_, select, update, create_engine
+from sqlalchemy import and_, or_, select, update, create_engine, desc
 from sqlalchemy.exc import IntegrityError
 
 # Fallback default (if APP_DB_PATH is not set)
 from .deps import get_db as _default_get_db
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Routers
+# ──────────────────────────────────────────────────────────────────────────────
 router = APIRouter(prefix="/api/cost-books", tags=["Cost Books"])
+# NEW: product-scoped router to satisfy frontend calls like /api/products/:id/best-cost
+router_products = APIRouter(prefix="/api/products", tags=["Products (Cost Lookup)"])
 
 # =========================================================
 # DB SESSION — align with Products API (APP_DB_PATH)
@@ -119,6 +124,19 @@ class CostBookEntryOut(BaseModel):
     currency: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
+# NEW: response for /api/products/{id}/best-cost
+class BestCostOut(BaseModel):
+    product_id: int
+    cost_book_id: int
+    cost_book_entry_id: int
+    unit_cost: float
+    currency: Optional[str] = None
+    valid_from: Optional[date] = None
+    valid_to: Optional[date] = None
+    cost_term: Optional[str] = None
+    cost_term_id: Optional[int] = None
+    cost_term_code: Optional[str] = None
+
 # -----------------------
 # Lazy models
 # -----------------------
@@ -206,9 +224,72 @@ def _with_product_labels_and_currency(
         )
     return out
 
-# -----------------------
+# NEW: best-cost selector used by /api/products/{id}/best-cost
+def _select_best_cost(db: Session, product_id: int, on: Optional[date]) -> Optional[BestCostOut]:
+    """
+    Choose the effective cost for a product.
+    Priority: active books, default book first, then latest valid_from.
+    Currency comes from the CostBook (entries don't have a currency column).
+    """
+    CostBook, CostBookEntry, _, PriceTerm = _models()
+
+    q = (
+        select(
+            CostBookEntry.id.label("entry_id"),
+            CostBookEntry.product_id,
+            CostBookEntry.cost_book_id,
+            CostBookEntry.unit_cost,
+            CostBook.currency.label("book_currency"),
+            CostBookEntry.valid_from,
+            CostBookEntry.valid_to,
+            CostBookEntry.cost_term_id,
+            PriceTerm.code.label("term_code"),
+            PriceTerm.name.label("term_name"),
+            CostBook.is_default,
+        )
+        .join(CostBook, CostBook.id == CostBookEntry.cost_book_id)
+        .outerjoin(PriceTerm, PriceTerm.id == CostBookEntry.cost_term_id)
+        .where(
+            CostBookEntry.product_id == product_id,
+            CostBook.is_active == True,  # noqa: E712
+        )
+    )
+
+    if on:
+        q = q.where(
+            and_(
+                or_(CostBookEntry.valid_from == None, CostBookEntry.valid_from <= on),  # noqa: E711
+                or_(CostBookEntry.valid_to == None, on <= CostBookEntry.valid_to),      # noqa: E711
+            )
+        )
+
+    q = q.order_by(
+        desc(CostBook.is_default),
+        desc(CostBookEntry.valid_from),
+        desc(CostBookEntry.id),
+    )
+
+    row = db.execute(q).first()
+    if not row:
+        return None
+
+    r = row._mapping
+    return BestCostOut(
+        product_id=product_id,
+        cost_book_id=r["cost_book_id"],
+        cost_book_entry_id=r["entry_id"],
+        unit_cost=float(r["unit_cost"] or 0),
+        currency=r.get("book_currency"),
+        valid_from=r.get("valid_from"),
+        valid_to=r.get("valid_to"),
+        cost_term=r.get("term_name"),
+        cost_term_id=r.get("cost_term_id"),
+        cost_term_code=r.get("term_code"),
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Books CRUD
-# -----------------------
+# ──────────────────────────────────────────────────────────────────────────────
 @router.get("", response_model=List[CostBookOut])
 def list_cost_books(
     db: Session = Depends(_get_db),
@@ -282,9 +363,9 @@ def delete_cost_book(book_id: int, db: Session = Depends(_get_db)):
     db.commit()
     return None
 
-# -----------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # Entries (nested) CRUD
-# -----------------------
+# ──────────────────────────────────────────────────────────────────────────────
 @router.get("/{book_id}/entries", response_model=List[CostBookEntryOut])
 def list_cost_book_entries(
     book_id: int,
@@ -392,3 +473,21 @@ def delete_cost_book_entry(book_id: int, entry_id: int, db: Session = Depends(_g
     db.delete(e)
     db.commit()
     return None
+
+# ──────────────────────────────────────────────────────────────────────────────
+# NEW: Product-scoped "best cost" endpoint to match the frontend
+# ──────────────────────────────────────────────────────────────────────────────
+@router_products.get("/{product_id}/best-cost", response_model=BestCostOut)
+def best_cost_for_product(
+    product_id: int,
+    on: Optional[date] = Query(default=None, description="Evaluate cost valid on this date (YYYY-MM-DD)"),
+    db: Session = Depends(_get_db),
+):
+    """
+    Mirrors /api/products/{id}/best-price, but for Cost Books.
+    Returns 404 if no active/default cost applies (frontend already handles 404s gracefully).
+    """
+    result = _select_best_cost(db, product_id=product_id, on=on)
+    if not result:
+        raise HTTPException(status_code=404, detail="No cost found for product")
+    return result
