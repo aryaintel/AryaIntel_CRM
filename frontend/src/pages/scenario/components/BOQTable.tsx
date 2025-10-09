@@ -75,6 +75,21 @@ type BestPriceResp = {
   price_term_id?: number | null; // important for mapping
 };
 
+// === NEW: mirror of best price, but for Cost Books ===
+type BestCostResp = {
+  product_id: number;
+  cost_book_id: number;
+  cost_book_entry_id: number;
+  unit_cost: number;
+  currency?: string | null;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  cost_term?: string | null;
+  cost_terms?: string | null;
+  cost_term_code?: string | null;
+  cost_term_id?: number | null;
+};
+
 type PriceTermRef = {
   id: number;
   code: string;   // e.g. "EXW"
@@ -513,14 +528,14 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       try {
         const fam = await apiGet<FamiliesListResp>("/api/product-families");
         setFamilies(fam.items || []);
-      } catch {/* ignore */}
+      } catch { /* ignore */ }
       try {
         // load price terms once
         const pt = await apiGet<PriceTermsListResp>("/api/price-terms");
         const map: Record<number, PriceTermRef> = {};
         (pt.items || []).forEach((t) => { map[t.id] = t; });
         setPriceTermsById(map);
-      } catch {/* ignore */}
+      } catch { /* ignore */ }
     })();
   }, []);
 
@@ -560,9 +575,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
         return { ...prev, [st.key]: w };
       });
     }
-    function onUp() {
-      startResizingRef.current = null;
-    }
+    function onUp() { startResizingRef.current = null; }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
@@ -592,6 +605,15 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     );
   }
 
+  // NEW: Cost Book resolver
+  async function fetchBestCost(productId: number, onISO?: string | null) {
+    const q = new URLSearchParams();
+    if (onISO) q.set("on", onISO);
+    return apiGet<BestCostResp>(
+      `/api/products/${productId}/best-cost${q.toString() ? `?${q.toString()}` : ""}`
+    );
+  }
+
   function labelFromTermId(id?: number | null): string | null {
     if (!id || !(id in priceTermsById)) return null;
     const t = priceTermsById[id];
@@ -608,7 +630,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
     return { label: str ?? null, id };
   }
 
-  /* ---------- load() with PB sync for linked rows ---------- */
+  /* ---------- load() with PB/CB sync for linked rows ---------- */
   async function load() {
     setLoading(true);
     setErr(null);
@@ -687,6 +709,25 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             }
           })
       );
+
+      // NEW: Sync Unit COGS from Cost Book for rows that already have a product
+      await Promise.all(
+        norm
+          .filter((r) => !!r.product_id)
+          .map(async (r) => {
+            try {
+              const { on } = singleMonthWindow(r);
+              const bc = await fetchBestCost(r.product_id!, on);
+              setRows((prev) =>
+                prev.map((x) =>
+                  x.id === r.id ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
+                )
+              );
+            } catch {
+              /* keep existing */
+            }
+          })
+      );
     } catch (e: any) {
       setErr(e?.response?.data?.detail || e?.message || "Failed to load BOQ.");
     } finally {
@@ -723,8 +764,15 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       nextDraft.unit_price = Number(bp.unit_price);
       nextDraft.price_term = label ?? null;
       nextDraft.price_term_id = id ?? null;
+
+      // ALSO fetch unit COGS from Cost Book
+      try {
+        const bc = await fetchBestCost(p.id, on);
+        nextDraft.unit_cogs = Number(bc.unit_cost ?? 0);
+      } catch { /* ignore */ }
     } catch {
       nextDraft.unit_price = p.base_price != null ? Number(p.base_price) : 0;
+      // leave unit_cogs as-is if cost lookup not available
     }
 
     setDraft(nextDraft);
@@ -769,6 +817,16 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
             : x
         )
       );
+
+      // ALSO pull Unit COGS from Cost Book
+      try {
+        const bc = await fetchBestCost(p.id, on);
+        setRows((prev) =>
+          prev.map((x) =>
+            x.id === rowId ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
+          )
+        );
+      } catch { /* ignore */ }
     } catch {
       setRows((prev) =>
         prev.map((x) =>
@@ -864,7 +922,6 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
       const uc = num(r.unit_cogs ?? 0);
       const lineRev = qty * price;
       const lineCogs = qty * uc;
-
       const startY = r.start_year!;
       const startM = r.start_month!;
 
@@ -1155,6 +1212,12 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                           next.unit_price = Number(bp.unit_price);
                           next.price_term = label ?? null;
                           next.price_term_id = id ?? null;
+
+                          // ALSO refresh unit COGS when date changes
+                          try {
+                            const bc = await fetchBestCost(next.product_id!, on);
+                            next.unit_cogs = Number(bc.unit_cost ?? 0);
+                          } catch { /* ignore */ }
                         } catch {}
                       }
                       setDraft(next);
@@ -1381,7 +1444,17 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                                   : x
                               )
                             );
-                          } catch {/* ignore */}
+
+                            // ALSO sync Unit COGS on date changes
+                            try {
+                              const bc = await fetchBestCost(r.product_id, on);
+                              setRows((p) =>
+                                p.map((x) =>
+                                  x.id === r.id ? { ...x, unit_cogs: Number(bc.unit_cost ?? 0) } : x
+                                )
+                              );
+                            } catch { /* ignore */ }
+                          } catch { /* ignore */ }
                         }
                       }}
                     />

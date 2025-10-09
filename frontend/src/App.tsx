@@ -1,4 +1,4 @@
-// src/App.tsx
+// Path: src/App.tsx
 import {
   NavLink,
   Routes,
@@ -36,6 +36,8 @@ import ScenarioPage from "./pages/scenario/Scenario";
 import ProductsPage from "./pages/ProductsPage";
 // NEW: Price Books
 import PriceBooksPage from "./pages/products/PriceBooksPage";
+// NEW: Cost Books
+import CostBooksPage from "./pages/products/CostBooksPage"; // NEW
 // NEW: Product Families
 import ProductFamiliesPage from "./pages/products/ProductFamiliesPage";
 
@@ -63,6 +65,7 @@ function usePageTitle() {
   if (pathname.startsWith("/scenarios")) return "Scenario";
   // More specific must come before the generic "/products"
   if (pathname.startsWith("/products/price-books")) return "Price Books";
+  if (pathname.startsWith("/products/cost-books")) return "Cost Books"; // NEW
   if (pathname.startsWith("/products/price-terms")) return "Price Terms"; // NEW
   if (pathname.startsWith("/products/families")) return "Product Families";
   if (pathname.startsWith("/products")) return "Products";
@@ -233,6 +236,17 @@ export default function App() {
             }
           >
             Price Books
+          </NavLink>
+          {/* NEW: Cost Books */}
+          <NavLink
+            to="/products/cost-books"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
+            }
+          >
+            Cost Books
           </NavLink>
           {/* NEW: Price Terms */}
           <NavLink
@@ -425,6 +439,16 @@ export default function App() {
               element={
                 <RequireAuth>
                   <PriceBooksPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Cost Books rotası */}
+            <Route
+              path="/products/cost-books"
+              element={
+                <RequireAuth>
+                  <CostBooksPage />
                 </RequireAuth>
               }
             />

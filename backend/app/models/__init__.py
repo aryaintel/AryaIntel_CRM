@@ -1,3 +1,4 @@
+
 from sqlalchemy import (
     Column,
     Integer,
@@ -158,11 +159,15 @@ class PriceTerm(Base):
     __tablename__ = "price_terms"
 
     id = Column(Integer, primary_key=True, index=True)
-    code = Column(String, nullable=False)            # e.g., EXW, FOB
+    code = Column(String(20), nullable=False, unique=True)  # e.g., EXW, FOB
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     sort_order = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_price_terms_active", "is_active"),
+    )
 
 
 class PriceBook(Base):
@@ -210,6 +215,10 @@ class PriceBookEntry(Base):
     __table_args__ = (
         Index("ix_pbe_book", "price_book_id"),
         Index("ix_pbe_product", "product_id"),
+        # helpful resolver index (product + term + window)
+        Index("ix_pbe_lookup", "product_id", "price_term_id", "valid_from", "valid_to"),
+        # prevent inverted windows
+        CheckConstraint("(valid_from IS NULL) OR (valid_to IS NULL) OR (valid_from <= valid_to)", name="ck_pbe_window"),
     )
 
 
@@ -264,6 +273,8 @@ class CostBookEntry(Base):
         Index("ix_cbe_product", "product_id"),
         # helpful resolver index (product + term + window)
         Index("ix_cbe_lookup", "product_id", "cost_term_id", "valid_from", "valid_to"),
+        # prevent inverted windows
+        CheckConstraint("(valid_from IS NULL) OR (valid_to IS NULL) OR (valid_from <= valid_to)", name="ck_cbe_window"),
     )
 
 
@@ -735,6 +746,7 @@ class ScenarioBOQItem(Base):
     unit_price = Column(Numeric(18, 4), nullable=False, default=0)
     unit_cogs = Column(Numeric(18, 4), nullable=True)
 
+    # once | monthly | per_shipment | per_tonne
     frequency = Column(String(20), nullable=False, default="once")
     start_year = Column(Integer, nullable=True)
     start_month = Column(Integer, nullable=True)
@@ -759,7 +771,12 @@ class ScenarioBOQItem(Base):
     scenario = relationship("Scenario", back_populates="boq_items", lazy="selectin")
 
     __table_args__ = (
-        CheckConstraint("category IN ('bulk_with_freight','bulk_ex_freight','freight')", name="ck_boq_category"),
+        CheckConstraint(
+            "category IN ('bulk_with_freight','bulk_ex_freight','freight') OR category IS NULL",
+            name="ck_boq_category",
+        ),
+        CheckConstraint("frequency IN ('once','monthly','per_shipment','per_tonne')", name="ck_boq_frequency"),
+        CheckConstraint("(months IS NULL) OR (months >= 1)", name="ck_boq_months"),
         Index("ix_boq_scenario", "scenario_id"),
         Index("ix_boq_product", "product_id"),
     )
