@@ -1,4 +1,4 @@
-// frontend/src/pages/scenario/Scenario.tsx
+// Pathway: C:/Dev/AryaIntel_CRM/frontend/src/pages/scenario/Scenario.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, ApiError } from "../../lib/api";
@@ -99,17 +99,6 @@ function tabBtnClass(active: boolean, disabled?: boolean) {
     !active && disabled && "opacity-50 cursor-not-allowed"
   );
 }
-const withTimeout = <T,>(p: Promise<T>, ms = 8000): Promise<T> =>
-  new Promise((res, rej) => {
-    const t = setTimeout(() => rej(new Error(`Request timed out in ${ms}ms`)), ms);
-    p.then((v) => {
-      clearTimeout(t);
-      res(v);
-    }).catch((e) => {
-      clearTimeout(t);
-      rej(e);
-    });
-  });
 
 /* ---------------- Component ---------------- */
 export default function ScenarioPage() {
@@ -151,6 +140,18 @@ export default function ScenarioPage() {
   const [flow, setFlow] = useState<Workflow | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // Global 401 listener (api.ts -> window.dispatchEvent("auth:unauthorized", ...))
+  useEffect(() => {
+    const onUnauthorized = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      setAuthError("Session expired or invalid token. Please sign in again.");
+      console.warn("auth:unauthorized", detail);
+    };
+    window.addEventListener("auth:unauthorized", onUnauthorized as EventListener);
+    return () => window.removeEventListener("auth:unauthorized", onUnauthorized as EventListener);
+  }, []);
 
   async function loadAll() {
     if (!id) {
@@ -160,30 +161,36 @@ export default function ScenarioPage() {
     }
     setLoading(true);
     setErr(null);
+    setAuthError(null);
     try {
-      const [scRes, wfRes] = await Promise.allSettled([
-        withTimeout(apiGet<ScenarioDetail>(`/business-cases/scenarios/${id}`), 8000),
-        withTimeout(apiGet<Workflow>(`/scenarios/${id}/workflow`), 8000),
-      ]);
-
-      if (scRes.status === "fulfilled") {
-        setData(scRes.value);
-      } else {
-        const e: any = scRes.reason;
+      // 0) Auth health-check → token/çerez geçerli mi?
+      await apiGet("/me").catch((e) => {
         const msg =
           (e instanceof ApiError && e.message) ||
-          e?.response?.data?.detail ||
-          e?.message ||
-          "Failed to load scenario.";
-        setErr(String(msg));
-      }
+          e?.payload?.detail ||
+          "Unauthorized. Please login.";
+        throw new ApiError(401, String(msg));
+      });
 
-      if (wfRes.status === "fulfilled") {
-        setFlow(wfRes.value);
-      } else {
+      // 1) Scenario
+      const sc = await apiGet<ScenarioDetail>(`/business-cases/scenarios/${id}`);
+      setData(sc);
+
+      // 2) Workflow (opsiyonel; 404/401 UI’yi bloklamasın)
+      try {
+        const wf = await apiGet<Workflow>(`/scenarios/${id}/workflow`);
+        setFlow(wf);
+      } catch (wErr) {
         setFlow(null);
-        console.warn("Workflow load failed:", (wfRes as any).reason);
+        console.warn("Workflow load failed:", wErr);
       }
+    } catch (e: any) {
+      const msg =
+        (e instanceof ApiError && e.message) ||
+        e?.response?.data?.detail ||
+        e?.message ||
+        "Failed to load scenario.";
+      setErr(String(msg));
     } finally {
       setLoading(false);
     }
@@ -311,6 +318,13 @@ export default function ScenarioPage() {
           </button>
         </div>
       </div>
+
+      {/* Global auth error */}
+      {authError && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 p-2 rounded">
+          {authError}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-2 flex-wrap">

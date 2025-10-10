@@ -1,4 +1,4 @@
-// src/lib/api.ts
+// Pathway: C:/Dev/AryaIntel_CRM/frontend/src/lib/api.ts
 import { getToken } from "./auth";
 
 /** ---------- Config ---------- */
@@ -9,7 +9,10 @@ const DEBUG = (import.meta.env.VITE_DEBUG_API ?? "false") === "true";
 
 /** ---------- Helpers ---------- */
 function joinUrl(path: string) {
-  if (/^https?:\/\//i.test(path)) return path; // absolute URL ise dokunma
+  // absolute URL ise dokunma
+  if (/^https?:\/\//i.test(path)) return path;
+
+  // "/api/..." veya "/..." ya da "relative" tüm durumları API_BASE'e bağla
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${API_BASE}${p}`;
 }
@@ -110,12 +113,13 @@ async function request<T>(
         ? (body as any)
         : JSON.stringify(body),
     signal: controller.signal,
-    // credentials: "include",
+    // ÇOK ÖNEMLİ: Cookie tabanlı oturumlar için çerezi gönder
+    credentials: "include",
   };
 
   if (DEBUG) {
     // eslint-disable-next-line no-console
-    console.debug(`[API] ${method} ${url}`, { headers, body });
+    console.debug(`[API] ${method} ${url}`, { headers, body: isFormData ? "[FormData]" : body });
   }
 
   let res: Response;
@@ -131,13 +135,24 @@ async function request<T>(
         ? " (possible CORS issue or server is unreachable)"
         : "";
     throw new ApiError(0, (err?.message || "Network request failed") + hint, err, method, url);
+  } finally {
+    // fetch tamamlanınca/abort olunca mutlaka temizle
+    clearTimeout(timer);
   }
-
-  clearTimeout(timer);
 
   if (!res.ok) {
     const { message, payload } = await readPayload(res);
     const decorated = `[${res.status}] ${method} ${url} → ${message}`;
+
+    // Global 401 bildirimi (opsiyonel olarak route değiştirilebilir)
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("auth:unauthorized", { detail: { method, url, message, payload } })
+      );
+      // Örn: otomatik logout ya da login'e atmak istersen:
+      // window.location.assign("/login");
+    }
+
     throw new ApiError(res.status, decorated, payload, method, url);
   }
 
@@ -155,6 +170,7 @@ async function request<T>(
     return data;
   }
 
+  // Başka content-type ise, çağıran taraf belirlesin (şimdilik undefined)
   return undefined as unknown as T;
 }
 

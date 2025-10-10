@@ -1,3 +1,4 @@
+# Pathway: C:/Dev/AryaIntel_CRM/backend/app/api/rebates.py
 from __future__ import annotations
 
 from typing import List, Optional, Any, Dict, Union
@@ -10,7 +11,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .deps import get_db, get_current_user
+from .deps import get_db  # get_current_user kaldırıldı (ungated davranış)
 
 router = APIRouter(prefix="/api/scenarios", tags=["rebates"])
 
@@ -24,7 +25,6 @@ def _to_float(x: NumberLike) -> Optional[float]:
         return float(x)
     if isinstance(x, (int, float)):
         return float(x)
-    # last resort: try cast from str
     try:
         return float(x)  # type: ignore[arg-type]
     except Exception:
@@ -265,7 +265,6 @@ def list_rebates(
     include_details: bool = Query(False, description="If true, include tiers & lumps"),
     active: Optional[bool] = Query(None, description="Filter by is_active"),
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -302,7 +301,6 @@ def create_rebate(
     scenario_id: int,
     body: RebateIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -415,7 +413,6 @@ def update_rebate(
     rebate_id: int,
     body: RebateIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -474,7 +471,6 @@ def delete_rebate(
     scenario_id: int,
     rebate_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -495,7 +491,6 @@ def list_tiers(
     scenario_id: int,
     rebate_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -510,7 +505,6 @@ def create_tier(
     rebate_id: int,
     body: TierIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -550,7 +544,6 @@ def update_tier(
     tier_id: int,
     body: TierIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -593,7 +586,6 @@ def delete_tier(
     rebate_id: int,
     tier_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -618,7 +610,6 @@ def list_lumps(
     scenario_id: int,
     rebate_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -633,7 +624,6 @@ def create_lump(
     rebate_id: int,
     body: LumpIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -663,7 +653,6 @@ def update_lump(
     lump_id: int,
     body: LumpIn,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)
@@ -695,7 +684,6 @@ def delete_lump(
     rebate_id: int,
     lump_id: int,
     db: Session = Depends(get_db),
-    user=Depends(get_current_user),
 ):
     try:
         _ensure_schema(db)

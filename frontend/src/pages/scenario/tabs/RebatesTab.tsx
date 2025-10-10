@@ -140,22 +140,28 @@ const API_BASE = resolveApiBase();
 
 // swagger’da gördüğümüz yapı için default prefix /api
 function getApiPrefix(): string {
+  const normalize = (s?: string | null) => {
+    const raw = (s ?? "").trim();
+    if (!raw) return "/api";
+    const stripped = raw.replace(/^\/+|\/+$/g, ""); // remove leading/trailing slashes
+    if (!stripped) return "/api";                 // was just "/" → default to /api
+    return `/${stripped}`;                        // ensure single leading slash
+  };
+
   try {
     // @ts-ignore
     const envPref = typeof import.meta !== "undefined" ? import.meta?.env?.VITE_API_PREFIX : "";
-    if (envPref) return String(envPref);
+    if (envPref) return normalize(String(envPref));
   } catch {}
   // @ts-ignore
   if (typeof window !== "undefined" && (window as any).__API_PREFIX__) {
     // @ts-ignore
-    return String((window as any).__API_PREFIX__);
+    return normalize(String((window as any).__API_PREFIX__));
   }
-  // meta
   try {
     const meta = document.querySelector('meta[name="api-prefix"]') as HTMLMetaElement | null;
-    if (meta?.content) return meta.content;
+    if (meta?.content) return normalize(meta.content);
   } catch {}
-  // varsayılan
   return "/api";
 }
 const API_PREFIX = getApiPrefix();
@@ -281,6 +287,28 @@ const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 
 const cellClass = "px-2 py-1 border-b border-gray-200 text-sm";
 
+/* -------------------------------------------------------------------------- */
+/*                             BODY PARSING HELPERS                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * We avoid calling res.json() and then res.text() (or vice-versa)
+ * because the body is a one-time stream. Instead, we read once via
+ * res.text() and then optionally JSON.parse that text.
+ */
+function safeJsonMaybe<T = any>(text: string): { ok: boolean; value?: T; error?: any } {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return { ok: false };
+  // best-effort sniff: JSON-ish
+  const looksJson = /^[{\[]/.test(trimmed);
+  if (!looksJson) return { ok: false };
+  try {
+    return { ok: true, value: JSON.parse(trimmed) as T };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
+}
+
 // -------------------------- API HELPERS ---------------------
 
 type RequestInitEx = RequestInit & { query?: Record<string, any> };
@@ -319,29 +347,55 @@ async function api<T>(path: string, init?: RequestInitEx): Promise<T> {
     headers,
   });
 
+  // Handle non-OK first using a text-first strategy to avoid body reuse errors.
   if (!res.ok) {
+    const errorText = await res.text().catch(() => "");
     let detail = "";
-    try {
-      const raw = await res.clone().json();
+
+    // Try to pull structured detail if the server actually returned JSON.
+    const parsed = safeJsonMaybe<any>(errorText);
+    if (parsed.ok) {
+      const raw = parsed.value;
       if (raw?.detail) {
         if (typeof raw.detail === "string") detail = raw.detail;
         else if (Array.isArray(raw.detail) && raw.detail[0]?.msg) detail = raw.detail[0].msg;
       } else if (raw?.message) {
         detail = raw.message;
       }
-    } catch {}
+    } else {
+      // Plain text message path
+      detail = errorText || "";
+    }
+
     const msg = `${res.status} ${res.statusText}${detail ? `: ${detail}` : ""}`;
     throw new Error(msg);
   }
 
+  // 204 No Content short-circuit
   if (res.status === 204) return undefined as T;
 
-  try {
-    return (await res.json()) as T;
-  } catch {
-    const txt = await res.text();
-    return txt as unknown as T;
+  // SUCCESS path: read once as text, then maybe parse JSON.
+  const bodyText = await res.text();
+
+  // Fast path when server advertises JSON via header
+  const ctype = (res.headers.get("content-type") || "").toLowerCase();
+  const isJsonHeader = ctype.includes("application/json");
+
+  if (isJsonHeader) {
+    // If header says JSON but body is empty, return undefined to satisfy callers expecting T | void
+    if (!bodyText.trim()) return undefined as T;
+    const attempt = safeJsonMaybe<T>(bodyText);
+    if (attempt.ok) return attempt.value as T;
+    // header lied or body malformed: fall back to text as unknown
+    return bodyText as unknown as T;
   }
+
+  // If header doesn’t claim JSON, we still try best-effort parse (many backends forget the header).
+  const attempt = safeJsonMaybe<T>(bodyText);
+  if (attempt.ok) return attempt.value as T;
+
+  // Otherwise, deliver raw text.
+  return bodyText as unknown as T;
 }
 
 function toIntOrNull(x?: string): number | null {
