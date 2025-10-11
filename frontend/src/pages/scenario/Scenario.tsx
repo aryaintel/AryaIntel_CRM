@@ -92,11 +92,11 @@ function fmtDateISO(d: string) {
 }
 function tabBtnClass(active: boolean, disabled?: boolean) {
   return cls(
-    "px-4 py-2 rounded border text-base transition-colors focus:outline-none",
+    "px-4 py-2 rounded-md border text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1",
     active
-      ? "bg-indigo-600 text-white border-indigo-600 shadow font-semibold"
-      : "bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200",
-    !active && disabled && "opacity-50 cursor-not-allowed"
+      ? "bg-indigo-600 text-white border-indigo-600 shadow focus:ring-indigo-300"
+      : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50 focus:ring-indigo-200",
+    !active && disabled && "opacity-60 cursor-not-allowed hover:bg-white"
   );
 }
 
@@ -223,6 +223,56 @@ export default function ScenarioPage() {
   const canGoTAX = fxReady;
   const canGoSERVICES = taxReady;
   const canGoSUMMARY = servicesReady;
+  const gatingActive = !!flow;
+
+  type TabButtonItem = { key: Tab; label: string; title: string; disabled?: boolean; isSummary?: boolean };
+  const tabItems = useMemo<TabButtonItem[]>(
+    () => [
+      { key: "boq" as Tab, label: "1. Products", title: "Products (Input)" },
+      {
+        key: "services" as Tab,
+        label: "2. Services",
+        title: "Services Pricing",
+        disabled: gatingActive && !canGoSERVICES,
+      },
+      {
+        key: "twc" as Tab,
+        label: "3. TWC",
+        title: "Transfer Window Calculation",
+        disabled: gatingActive && !canGoTWC,
+      },
+      { key: "index" as Tab, label: "4. Index", title: "Index Series (Manage time series data)" },
+      { key: "escalation" as Tab, label: "5. Escalation", title: "Escalation (Policies & resolve)" },
+      { key: "rebates" as Tab, label: "6. Rebates", title: "Scenario Rebates" },
+      { key: "risefall" as Tab, label: "7. Rise & Fall", title: "Rise & Fall (Formulation)" },
+      {
+        key: "capex" as Tab,
+        label: "8. CAPEX",
+        title: "CAPEX inputs",
+        disabled: gatingActive && !canGoCAPEX,
+      },
+      {
+        key: "fx" as Tab,
+        label: "9. FX",
+        title: "Foreign exchange settings",
+        disabled: gatingActive && !canGoFX,
+      },
+      {
+        key: "tax" as Tab,
+        label: "10. TAX",
+        title: "Tax configuration",
+        disabled: gatingActive && !canGoTAX,
+      },
+      {
+        key: "summary" as Tab,
+        label: "11. Summary",
+        title: "Scenario summary",
+        disabled: gatingActive && !canGoSUMMARY,
+        isSummary: true,
+      },
+    ],
+    [canGoCAPEX, canGoFX, canGoSERVICES, canGoSUMMARY, canGoTAX, canGoTWC, gatingActive]
+  );
 
   function setTabSafe(next: Tab) {
     // Ungated areas
@@ -235,27 +285,27 @@ export default function ScenarioPage() {
       return;
     }
     if (next === "twc" && !boqReady) {
-      alert("First mark 'Ready' in 1. BOQ.");
+      alert("First mark 'Ready' in 1. Products.");
       return;
     }
     if (next === "capex" && !twcReady) {
-      alert("First mark 'Ready' in 2. TWC.");
+       alert("First mark 'Ready' in 3. TWC.");
       return;
     }
     if (next === "fx" && !capexReady) {
-      alert("First mark 'Ready' in 5. CAPEX.");
+       alert("First mark 'Ready' in 8. CAPEX.");
       return;
     }
     if (next === "tax" && !fxReady) {
-      alert("First mark 'Ready' in 6. FX.");
+       alert("First mark 'Ready' in 9. FX.");
       return;
     }
     if (next === "services" && !taxReady) {
-      alert("First mark 'Ready' in 7. TAX.");
+      alert("First mark 'Ready' in 10. TAX.");
       return;
     }
     if ((next === "pl" || next === "summary") && !servicesReady) {
-      alert("First mark 'Ready' in 8. SERVICES.");
+      alert("First mark 'Ready' in 2. Services.");
       return;
     }
     setTabRaw(next === "pl" ? "summary" : next);
@@ -328,87 +378,20 @@ export default function ScenarioPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 flex-wrap">
-        <button onClick={() => setTabRaw("boq")} className={tabBtnClass(tab === "boq")} title="Products (Input)"> 1. Products</button>
 
-
-        <button
-          onClick={() => setTabRaw("services")}
-         
-          className={tabBtnClass(tab === "services", !canGoSERVICES)}
-          title="Open tab"
-        > 2. Services</button>
-
-
-        <button
-          onClick={() => setTabRaw("twc")}
-         
-          className={tabBtnClass(tab === "twc", !canGoTWC)}
-          title="Open tab"
-        > 3. TWC</button>
-
-
-        <button
-          onClick={() => setTabRaw("index")}
-          className={tabBtnClass(tab === "index")}
-          title="Index Series (Manage time series data)"
-        > 4. Index</button>
-
-
-        <button
-          onClick={() => setTabRaw("escalation")}
-          className={tabBtnClass(tab === "escalation")}
-          title="Escalation (Policies & resolve)"
-        > 5. Escalation</button>
-
-
-        <button
-          onClick={() => setTabRaw("rebates")}
-          className={tabBtnClass(tab === "rebates")}
-          title="Scenario Rebates"
-        >
-          Rebates
-        </button>
-
-
-        <button
-          onClick={() => setTabRaw("risefall")}
-          className={tabBtnClass(tab === "risefall")}
-          title="Rise & Fall (Formulation)"
-        >
-          Rise & Fall
-        </button>
-
-
-        <button
-          onClick={() => setTabRaw("capex")}
-         
-          className={tabBtnClass(tab === "capex", !canGoCAPEX)}
-          title="Open tab"
-        > 8. CAPEX</button>
-
-
-        <button
-          onClick={() => setTabRaw("fx")}
-         
-          className={tabBtnClass(tab === "fx", !canGoFX)}
-          title="Open tab"
-        > 9. FX</button>
-
-
-        <button
-          onClick={() => setTabRaw("tax")}
-         
-          className={tabBtnClass(tab === "tax", !canGoTAX)}
-          title="Open tab"
-        > 10. TAX</button>
-
-
-        <button
-          onClick={() => setTabRaw("summary")}
-         
-          className={tabBtnClass(tab === "summary" || tab === "pl", !canGoSUMMARY)}
-          title="Open tab"
-        > 11. Summary</button>
+         {tabItems.map((item) => {
+          const isActive = item.isSummary ? tab === "summary" || tab === "pl" : tab === item.key;
+          return (
+            <button
+              key={item.key}
+              onClick={() => setTabSafe(item.key)}
+              className={tabBtnClass(isActive, item.disabled)}
+              title={item.title}
+            >
+              {item.label}
+            </button>
+          );
+        })}
       </div>
 
       {loading && <div className="text-sm text-gray-500">Loading…</div>}
@@ -428,7 +411,7 @@ export default function ScenarioPage() {
                 onChanged={loadAll}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("services");
+                  setTabSafe("services");
                 }}
               />
             </div>
@@ -441,7 +424,7 @@ export default function ScenarioPage() {
                 onMarkedReady={async () => {
                   await loadAll();
                   // follow left-to-right → go to Index next
-                  setTabRaw("index");
+                   setTabSafe("index");
                 }}
               />
             </div>
@@ -454,8 +437,8 @@ export default function ScenarioPage() {
                 <div className="text-sm text-gray-700 font-medium">Index Series</div>
                 <button
                   className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
-                  title="Mark Ready and go to 4. Escalation"
-                  onClick={() => setTabRaw("escalation")}
+                  title="Mark Ready and go to 5. Escalation"
+                  onClick={() => setTabSafe("escalation")}
                 >
                   Mark Ready → Escalation
                 </button>
@@ -470,7 +453,7 @@ export default function ScenarioPage() {
                 scenarioId={id}
                 onMarkedReady={async () => {
                   // Escalation has no server 'ready' flag; just navigate
-                  setTabRaw("rebates");
+                  setTabSafe("rebates");
                 }}
               />
             </div>
@@ -480,7 +463,7 @@ export default function ScenarioPage() {
             <div className="rounded border p-4 bg-white">
               <RebatesTab
                 scenarioId={id}
-                onMarkedReady={() => setTabRaw("risefall")}
+                onMarkedReady={() => setTabSafe("risefall")}
               />
             </div>
           )}
@@ -501,7 +484,7 @@ export default function ScenarioPage() {
                 onChanged={loadAll}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("fx");
+                   setTabSafe("fx");
                 }}
               />
             </div>
@@ -514,7 +497,7 @@ export default function ScenarioPage() {
                 isReady={!!flow?.fx_ready}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("tax");
+                   setTabSafe("tax");
                 }}
               />
             </div>
@@ -527,25 +510,23 @@ export default function ScenarioPage() {
                 isReady={!!flow?.tax_ready}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("services");
+                   setTabSafe("services");
                 }}
               />
             </div>
           )}
 
-          // C:/Dev/AryaIntel_CRM/frontend/src/pages/scenario/Scenario.tsx
-
-{tab === "services" && (
-  <div className="rounded border p-4 bg-white">
-    <ServicesTable
-      scenarioId={id}
-      onMarkedReady={async () => {
-        await loadAll();
-        setTabRaw("services");
-      }}
-    />
-  </div>
-)}
+           {tab === "services" && (
+            <div className="rounded border p-4 bg-white">
+              <ServicesTable
+                scenarioId={id}
+                onMarkedReady={async () => {
+                  await loadAll();
+                  setTabRaw("twc");
+                }}
+              />
+            </div>
+          )}
 
 
           {(tab === "summary" || tab === "pl") && (

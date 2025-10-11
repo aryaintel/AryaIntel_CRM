@@ -115,7 +115,7 @@ const CURRENCIES = ["USD", "EUR", "GBP", "TRY", "SAR", "AED"];
 
 /* -------------------------------- Component ------------------------------- */
 
-export default function ServicesTable({ scenarioId, onChanged }: Props) {
+export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: Props) {
   // IMPORTANT: services CRUD lives under legacy /scenarios prefix (no /api)
   const baseUrl = `/scenarios/${scenarioId}/services`;
 
@@ -295,7 +295,15 @@ export default function ServicesTable({ scenarioId, onChanged }: Props) {
       setErr(e?.response?.data?.detail || e?.message || "Failed to update status.");
     }
   }
-
+ async function markReady() {
+    if (!confirm("Mark SERVICES as ready and move to TWC?")) return;
+    try {
+      await apiPost(`/api/scenarios/${scenarioId}/workflow/mark-services-ready`, {});
+      onMarkedReady?.();
+    } catch (e: any) {
+      alert(e?.response?.data?.detail || e?.message || "Cannot mark SERVICES as ready.");
+    }
+  }
   /* --------------------------------- Render --------------------------------- */
 
   function HeaderCell({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -442,15 +450,28 @@ export default function ServicesTable({ scenarioId, onChanged }: Props) {
     }, 0);
   }, [rows]);
 
+  const canMarkReady = useMemo(() => rows.some((r) => r.is_active), [rows]);
+
   // TOTAL VISIBLE COLUMNS (for colSpan in detail/empty rows)
   const VISIBLE_COLS = 20;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-base font-semibold">Services Pricing (Excel parity)</h3>
-        <div className="text-xs text-gray-500">
-          Monthly Cost (rough): <span className="font-semibold">{fmt1(totalMonthlyCost)}</span>
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-gray-500">
+            Monthly Cost (rough): <span className="font-semibold">{fmt1(totalMonthlyCost)}</span>
+          </div>
+          {onMarkedReady && (
+            <button
+              className="px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+              title="Mark Ready and go to Summary"
+              onClick={onMarkedReady}
+            >
+              Mark Ready → Summary
+            </button>
+          )}
         </div>
       </div>
 

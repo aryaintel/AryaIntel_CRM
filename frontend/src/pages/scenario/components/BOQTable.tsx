@@ -404,18 +404,12 @@ function ProductAutocomplete({
 }
 
 /* ---------- Read-only Price Term Badge ---------- */
-function PriceTermBadge({
-  term,
-  derived,
-}: {
-  term: PriceTerm | "" | null | undefined;
-  derived: boolean;
-}) {
+function PriceTermBadge({ term, derived }: { term: PriceTerm | "" | null | undefined; derived: boolean }) {
   const label = term || "—";
   return (
     <div
       className={cls(
-        "inline-flex items-center rounded px-2 py-1 text-xs border",
+        "flex w-full items-center justify-center rounded px-2 py-1 text-xs border",
         label === "—"
           ? "text-gray-500 border-gray-200 bg-gray-50"
           : "text-indigo-700 border-indigo-200 bg-indigo-50"
