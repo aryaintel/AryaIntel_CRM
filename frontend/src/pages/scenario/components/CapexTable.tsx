@@ -60,29 +60,6 @@ function num(v: any): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
-function parseLocaleNumber(v: any): number {
-  if (v == null) return 0;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v !== "string") return Number(v) || 0;
-  // normalize "12 345,67" / "12.345,67" / "12,345.67"
-  const s = v.trim().replace(/\s+/g, "");
-  // if there are both separators, assume last non-digit is decimal
-  const decMatch = s.match(/[^0-9](\d{1,2})$/);
-  if (decMatch) {
-    const decSepIndex = s.length - decMatch[0].length;
-    const intPart = s.slice(0, decSepIndex).replace(/[^0-9]/g, "");
-    const decPart = s.slice(decSepIndex + 1).replace(/[^0-9]/g, "");
-    return Number(`${intPart}.${decPart}`) || 0;
-  }
-  // otherwise strip all non-digits except dot and parse
-  const cleaned = s.replace(/[^0-9.]/g, "");
-  return Number(cleaned) || 0;
-}
-function toNum(v: any): number {
-  const n = parseLocaleNumber(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
 function numOrNull(v: string | number | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();

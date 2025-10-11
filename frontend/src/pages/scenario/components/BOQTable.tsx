@@ -155,6 +155,7 @@ function NumberInput({
   placeholder,
   title,
   width = "w-full",
+  maxFractionDigits,
 }: {
   value: number | string | null | undefined;
   onChange: (n: number) => void;
@@ -164,6 +165,7 @@ function NumberInput({
   placeholder?: string;
   title?: string;
   width?: string;
+  maxFractionDigits?: number;
 }) {
   return (
     <input
@@ -171,8 +173,12 @@ function NumberInput({
       inputMode="decimal"
       step={step}
       min={min}
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+      value={value === null || value === undefined || value === "" ? "" : (maxFractionDigits != null ? Number(value).toFixed(maxFractionDigits) : String(value))}
+      onChange={(e) => {
+        const raw = e.target.value === "" ? 0 : Number(e.target.value);
+        const rounded = maxFractionDigits != null ? Number(raw.toFixed(maxFractionDigits)) : raw;
+        onChange(rounded);
+      }}
       onWheel={(e) => (e.currentTarget as HTMLInputElement).blur()}
       className={cls(
         "px-2 py-1 rounded border border-gray-300 text-right font-mono tabular-nums",
@@ -1102,7 +1108,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
           </button>
           <button
             onClick={async () => {
-              if (!confirm("Mark BOQ as ready and move to TWC?")) return;
+
               try {
                 await apiPost(`/scenarios/${scenarioId}/boq/mark-ready`, {});
                 onChanged?.();
@@ -1126,7 +1132,7 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                 : "Mark BOQ Ready and move to TWC"
             }
           >
-            Mark BOQ Ready → TWC
+           Mark Products Ready
           </button>
         </div>
       </div>
@@ -1296,16 +1302,18 @@ export default function BOQTable({ scenarioId, onChanged, onMarkedReady, isReady
                     }}
                   />
                 </td>
+<td className="px-3 py-2">
+  <NumberInput
+    value={draft.months ?? ""}
+    onChange={(n) => setDraft({ ...draft, months: Number.isFinite(n) ? Math.round(n) : null })}
+    step={1}
+    maxFractionDigits={0}
+    min={0}
+    placeholder="months"
+    title={String(draft.months ?? "")}
+  />
+</td>
 
-                <td className="px-3 py-2">
-                  <NumberInput
-                    value={draft.months ?? ""}
-                    onChange={(n) => setDraft({ ...draft, months: Number.isFinite(n) ? n : null })}
-                    min={0}
-                    placeholder="months"
-                    title={String(draft.months ?? "")}
-                  />
-                </td>
 
                 <td className="px-3 py-2 text-center">
                   <input

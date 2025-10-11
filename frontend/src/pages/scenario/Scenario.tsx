@@ -92,7 +92,7 @@ function fmtDateISO(d: string) {
 }
 function tabBtnClass(active: boolean, disabled?: boolean) {
   return cls(
-    "px-3 py-1 rounded border text-sm transition-colors focus:outline-none",
+    "px-4 py-2 rounded border text-base transition-colors focus:outline-none",
     active
       ? "bg-indigo-600 text-white border-indigo-600 shadow font-semibold"
       : "bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200",
@@ -328,34 +328,38 @@ export default function ScenarioPage() {
 
       {/* Tabs */}
       <div className="flex gap-2 flex-wrap">
-        <button onClick={() => setTabSafe("boq")} className={tabBtnClass(tab === "boq")} title="BOQ (Input)">
-          1. BOQ
-        </button>
+        <button onClick={() => setTabRaw("boq")} className={tabBtnClass(tab === "boq")} title="Products (Input)"> 1. Products</button>
+
 
         <button
-          onClick={() => setTabSafe("twc")}
-          disabled={!canGoTWC}
+          onClick={() => setTabRaw("services")}
+         
+          className={tabBtnClass(tab === "services", !canGoSERVICES)}
+          title="Open tab"
+        > 2. Services</button>
+
+
+        <button
+          onClick={() => setTabRaw("twc")}
+         
           className={tabBtnClass(tab === "twc", !canGoTWC)}
-          title={!canGoTWC ? "First complete 1. BOQ → Mark Ready." : "TWC (Input)"}
-        >
-          2. TWC
-        </button>
+          title="Open tab"
+        > 3. TWC</button>
+
 
         <button
           onClick={() => setTabRaw("index")}
           className={tabBtnClass(tab === "index")}
           title="Index Series (Manage time series data)"
-        >
-          3. Index
-        </button>
+        > 4. Index</button>
+
 
         <button
           onClick={() => setTabRaw("escalation")}
           className={tabBtnClass(tab === "escalation")}
           title="Escalation (Policies & resolve)"
-        >
-          4. Escalation
-        </button>
+        > 5. Escalation</button>
+
 
         <button
           onClick={() => setTabRaw("rebates")}
@@ -365,6 +369,7 @@ export default function ScenarioPage() {
           Rebates
         </button>
 
+
         <button
           onClick={() => setTabRaw("risefall")}
           className={tabBtnClass(tab === "risefall")}
@@ -373,50 +378,37 @@ export default function ScenarioPage() {
           Rise & Fall
         </button>
 
+
         <button
-          onClick={() => setTabSafe("capex")}
-          disabled={!canGoCAPEX}
+          onClick={() => setTabRaw("capex")}
+         
           className={tabBtnClass(tab === "capex", !canGoCAPEX)}
-          title={!canGoCAPEX ? "First complete 2. TWC → Mark Ready." : "CAPEX (Input)"}
-        >
-          5. CAPEX
-        </button>
+          title="Open tab"
+        > 8. CAPEX</button>
+
 
         <button
-          onClick={() => setTabSafe("fx")}
-          disabled={!canGoFX}
+          onClick={() => setTabRaw("fx")}
+         
           className={tabBtnClass(tab === "fx", !canGoFX)}
-          title={!canGoFX ? "First complete 5. CAPEX → Mark Ready." : "FX (Input)"}
-        >
-          6. FX
-        </button>
+          title="Open tab"
+        > 9. FX</button>
+
 
         <button
-          onClick={() => setTabSafe("tax")}
-          disabled={!canGoTAX}
+          onClick={() => setTabRaw("tax")}
+         
           className={tabBtnClass(tab === "tax", !canGoTAX)}
-          title={!canGoTAX ? "First complete 6. FX → Mark Ready." : "TAX (Input)"}
-        >
-          7. TAX
-        </button>
+          title="Open tab"
+        > 10. TAX</button>
+
 
         <button
-          onClick={() => setTabSafe("services")}
-          disabled={!canGoSERVICES}
-          className={tabBtnClass(tab === "services", !canGoSERVICES)}
-          title={!canGoSERVICES ? "First complete 7. TAX → Mark Ready." : "Services (Input)"}
-        >
-          8. SERVICES
-        </button>
-
-        <button
-          onClick={() => setTabSafe("summary")}
-          disabled={!canGoSUMMARY}
+          onClick={() => setTabRaw("summary")}
+         
           className={tabBtnClass(tab === "summary" || tab === "pl", !canGoSUMMARY)}
-          title={!canGoSUMMARY ? "First complete 8. SERVICES → Mark Ready." : "Summary (Output)"}
-        >
-          9. Summary
-        </button>
+          title="Open tab"
+        > 11. Summary</button>
       </div>
 
       {loading && <div className="text-sm text-gray-500">Loading…</div>}
@@ -436,7 +428,7 @@ export default function ScenarioPage() {
                 onChanged={loadAll}
                 onMarkedReady={async () => {
                   await loadAll();
-                  setTabRaw("twc");
+                  setTabRaw("services");
                 }}
               />
             </div>
@@ -541,18 +533,20 @@ export default function ScenarioPage() {
             </div>
           )}
 
-          {tab === "services" && (
-            <div className="rounded border p-4 bg-white">
-              <ServicesTable
-                scenarioId={id}
-                isReady={!!flow?.services_ready}
-                onMarkedReady={async () => {
-                  await loadAll();
-                  setTabRaw("summary");
-                }}
-              />
-            </div>
-          )}
+          // C:/Dev/AryaIntel_CRM/frontend/src/pages/scenario/Scenario.tsx
+
+{tab === "services" && (
+  <div className="rounded border p-4 bg-white">
+    <ServicesTable
+      scenarioId={id}
+      onMarkedReady={async () => {
+        await loadAll();
+        setTabRaw("services");
+      }}
+    />
+  </div>
+)}
+
 
           {(tab === "summary" || tab === "pl") && (
             <div className="rounded border p-4 bg-white">
