@@ -1,4 +1,4 @@
-# backend/app/main.py
+# C:/Dev/AryaIntel_CRM/backend/app/main.py
 from fastapi import FastAPI, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,6 +14,7 @@ from app.api.rebates_runtime import router as rebates_runtime_router
 from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
 from app.api.price_terms import router as price_terms_router
 from .api import cost_books_api
+
 # Core modules
 from .api import (
     auth,
@@ -40,11 +41,14 @@ from .api import (
 
 # Products, Price Books, Cost Books
 from .api.products_api import router as products_router
-from .api.cost_books_api import router as cost_books_router  # NEW: Cost Books CRUD
+from .api.cost_books_api import router as cost_books_router  # /api/cost-books/... (CRUD)
 
 # Rebates (Scenario-level CRUD)
 from .api.rebates_api import router as rebates_router
 from .api.db_schema import router as db_schema_router
+
+# NEW: OPEX (headers, lines, kv, allocations, basis-aware monthly allocation)
+from .api.opex_api import router as opex_router
 
 
 app = FastAPI(
@@ -102,7 +106,7 @@ async def ensure_cors_headers(request: Request, call_next):
         response.headers["Access-Control-Allow-Origin"] = origin
         prev_vary = response.headers.get("Vary")
         response.headers["Vary"] = "Origin" if not prev_vary else (
-            prev_vary if "Origin" in prev_vary.split(",") else prev_vary + ", Origin"
+            prev_vary if "Origin" in (prev_vary or "").split(",") else f"{prev_vary}, Origin"
         )
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
@@ -170,7 +174,7 @@ app.include_router(business_cases.router)
 app.include_router(boq.router)                    # BOQ  → /scenarios/...
 app.include_router(twc.router)                    # TWC
 app.include_router(scenario_capex.router)         # CAPEX
-app.include_router(scenario_services.router)      # SERVICES (OPEX)
+app.include_router(scenario_services.router)      # SERVICES (OPEX UI mevcut)
 app.include_router(scenario_overheads.router)     # Overheads
 app.include_router(scenario_fx.router)            # FX
 app.include_router(scenario_tax.router)           # TAX
@@ -195,8 +199,8 @@ app.include_router(rise_fall_router)
 
 # Products, Price Books, Cost Books
 app.include_router(products_router)               # products + price books
-app.include_router(cost_books_router)             # NEW: /api/cost-books/... (CRUD)
-app.include_router(cost_books_api.router_products) # ✅ NEW: /api/products/{id}/best-cost
+app.include_router(cost_books_router)             # /api/cost-books/... (CRUD)
+app.include_router(cost_books_api.router_products) # /api/products/{id}/best-cost
 
 # Rebates runtime (preview endpoint used by Summary & others)
 app.include_router(rebates_runtime_router)
@@ -205,3 +209,5 @@ app.include_router(rebates_runtime_router)
 app.include_router(db_schema_router)
 app.include_router(price_terms_router)
 
+# NEW: OPEX API (headers/lines/kv/alloc + basis-aware monthly allocation summary)
+app.include_router(opex_router)

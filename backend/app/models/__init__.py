@@ -1,4 +1,4 @@
-
+# C:/Dev/AryaIntel_CRM/backend/app/models/__init__.py
 from sqlalchemy import (
     Column,
     Integer,
@@ -223,7 +223,7 @@ class PriceBookEntry(Base):
 
 
 # =========================
-# Cost Books (NEW — mirrors Price Books, for unit costs)
+# Cost Books (mirrors Price Books, for unit costs)
 # =========================
 class CostBook(Base):
     __tablename__ = "cost_books"
@@ -715,7 +715,7 @@ class ScenarioCapex(Base):
     contingency_pct = Column(Numeric(5, 2), nullable=True, default=0)
     partial_month_policy = Column(String, nullable=True, default="full_month")
 
-    # NEW: Capex Reward sütunları (DB migration ile uyumlu)
+    # NEW: Capex Reward sütunları
     reward_enabled = Column(Boolean, nullable=True, default=False)
     reward_pct = Column(Numeric(8, 4), nullable=True)  # yüzde, örn. 50 -> %50
     reward_spread_kind = Column(String, nullable=True, default="even")  # even|follow_boq|custom
