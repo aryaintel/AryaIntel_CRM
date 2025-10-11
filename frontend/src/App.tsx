@@ -1,4 +1,4 @@
-// Path: src/App.tsx
+// Pathway: C:/Dev/AryaIntel_CRM/frontend/src/App.tsx
 import {
   NavLink,
   Routes,
@@ -41,6 +41,9 @@ import CostBooksPage from "./pages/products/CostBooksPage"; // NEW
 // NEW: Product Families
 import ProductFamiliesPage from "./pages/products/ProductFamiliesPage";
 
+// NEW: Services Catalog (parallel to Products)
+import ServicesCatalogPage from "./pages/services/ServicesCatalogPage"; // NEW
+
 // NEW: Debug health page
 import Health from "./pages/debug/Health";
 
@@ -69,6 +72,8 @@ function usePageTitle() {
   if (pathname.startsWith("/products/price-terms")) return "Price Terms"; // NEW
   if (pathname.startsWith("/products/families")) return "Product Families";
   if (pathname.startsWith("/products")) return "Products";
+  // Services top-level page
+  if (pathname.startsWith("/services")) return "Services"; // NEW
   if (pathname.startsWith("/boq-console")) return "BOQ Console";
   if (pathname.startsWith("/users")) return "Users";
   if (pathname.startsWith("/roles")) return "Roles";
@@ -258,6 +263,18 @@ export default function App() {
             }
           >
             Price Terms
+          </NavLink>
+
+          {/* NEW: Services */}
+          <NavLink
+            to="/services"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
+            }
+          >
+            Services
           </NavLink>
 
           {/* NEW: BOQ Console */}
@@ -459,6 +476,16 @@ export default function App() {
               element={
                 <RequireAuth>
                   <PriceTermsPage />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Services Catalog rotası */}
+            <Route
+              path="/services"
+              element={
+                <RequireAuth>
+                  <ServicesCatalogPage />
                 </RequireAuth>
               }
             />

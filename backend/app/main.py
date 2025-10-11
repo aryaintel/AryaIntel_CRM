@@ -14,6 +14,7 @@ from app.api.rebates_runtime import router as rebates_runtime_router
 from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
 from app.api.price_terms import router as price_terms_router
 from .api import cost_books_api
+from .api.services_catalog_api import router as services_catalog_router
 
 # Core modules
 from .api import (
@@ -211,3 +212,4 @@ app.include_router(price_terms_router)
 
 # NEW: OPEX API (headers/lines/kv/alloc + basis-aware monthly allocation summary)
 app.include_router(opex_router)
+app.include_router(services_catalog_router)
