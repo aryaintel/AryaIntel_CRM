@@ -704,7 +704,7 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
               <HeaderCell>Source</HeaderCell>
               <HeaderCell>Service Name</HeaderCell>
               <HeaderCell>Vendor</HeaderCell>
-              <HeaderCell>Category</HeaderCell>
+               <HeaderCell className="w-[130px]">Category</HeaderCell>
               <HeaderCell>UoM</HeaderCell>
               <HeaderCell className="text-right">Qty</HeaderCell>
               <HeaderCell className="text-right">Unit Cost</HeaderCell>
@@ -738,10 +738,13 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
 
               {/* Service Name with typeahead (scoped by selected family) */}
               <Cell className="max-w-[360px]">
-                <div className="flex flex-col gap-1">
+                 <div className="flex flex-col">
                   <Typeahead<ServiceCatalogItem>
                     value={serviceQ}
-                    onQueryChange={setServiceQ}
+                      onQueryChange={(q) => {
+                      setServiceQ(q);
+                      setDraft((d) => ({ ...d, service_name: q }));
+                    }}
                     options={catalog}
                     open={catalogOpen}
                     setOpen={setCatalogOpen}
@@ -762,12 +765,7 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
                       </div>
                     )}
                   />
-                  {/* Manual override field mirrors selected name */}
-                  <TxtInput
-                    placeholder="Service Name (manual override)"
-                    value={draft.service_name}
-                    onChange={(e) => setDraft((d) => ({ ...d, service_name: e.target.value }))}
-                  />
+  
                 </div>
               </Cell>
 
@@ -780,10 +778,18 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
               </Cell>
 
               {/* Category (Service Family) with typeahead */}
-              <Cell className="min-w-[260px]">
+               <Cell className="min-w-[130px]">
                 <Typeahead<ServiceFamily>
                   value={familyQ}
-                  onQueryChange={setFamilyQ}
+                  onQueryChange={(q) => {
+                    setFamilyQ(q);
+                    const nextCategory = q.trim().length > 0 ? q : null;
+                    setDraft((d) => ({ ...d, category: nextCategory }));
+                    setSelectedFamily((prev) => {
+                      if (!prev) return prev;
+                      return q === prev.name ? prev : null;
+                    });
+                  }}
                   options={families}
                   open={familyOpen}
                   setOpen={(open) => {
@@ -791,8 +797,9 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
                   }}
                   placeholder="Search category (Service Family)..."
                   onSelect={(fam) => {
-                   setSelectedFamily(fam);
-                    setDraft((d) => ({ ...d, category: (fam as any).name }));
+                    setSelectedFamily(fam);
+                    setFamilyQ(fam.name);
+                    setDraft((d) => ({ ...d, category: fam.name }));
                   // NOT: serviceQ'yu olduğu gibi bırakıyoruz ki kullanıcı girdisi kaybolmasın.
                       // İstersen katalogu açık tutup anında scoped sonuç gösterebilirsin:
                       // setCatalogOpen(true);
@@ -805,9 +812,7 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
                     </div>
                   )}
                 />
-                <div className="text-xs text-gray-500 mt-1">
-                  {selectedFamily ? `Selected: ${selectedFamily.name}` : "No category selected"}
-                </div>
+                
               </Cell>
 
               <Cell>
@@ -1015,7 +1020,7 @@ export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: 
                       )}
                     </Cell>
 
-                    <Cell title={view.category || ""}>
+                  <Cell className="min-w-[130px]" title={view.category || ""}>
                       {isEditing ? (
                         <TxtInput
                           value={ed!.category ?? ""}
