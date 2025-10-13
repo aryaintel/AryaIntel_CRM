@@ -96,6 +96,8 @@ class ServiceItemIn(BaseModel):
 class ServiceItemOut(BaseModel):
     id: int
     family_id: int
+    # NEW: family_name to help FE show category quickly and prefill Scenario Services
+    family_name: Optional[str] = None
     code: str
     name: str
     uom: Optional[str] = None
@@ -109,7 +111,8 @@ class ServiceItemOut(BaseModel):
 @router.get("/service-families", response_model=List[ServiceFamilyOut])
 def list_families(db: Session = Depends(get_db)):
     _ensure_schema(db)
-    sql = text("""        SELECT id, code, name, is_active, sort_order
+    sql = text("""
+        SELECT id, code, name, is_active, sort_order
         FROM service_families
         ORDER BY is_active DESC, sort_order ASC, name ASC;
     """)
@@ -121,9 +124,10 @@ def create_family(payload: ServiceFamilyIn, db: Session = Depends(get_db)):
     _ensure_schema(db)
     now = now_iso()
     try:
-        sql = text("""            INSERT INTO service_families (code, name, is_active, sort_order, created_at, updated_at)
+        sql = text("""
+            INSERT INTO service_families (code, name, is_active, sort_order, created_at, updated_at)
             VALUES (:code, :name, :is_active, :sort_order, :ca, :ua);
-        """        )
+        """)
         db.execute(sql, {
             "code": payload.code.strip(),
             "name": payload.name.strip(),
@@ -139,7 +143,8 @@ def create_family(payload: ServiceFamilyIn, db: Session = Depends(get_db)):
     return get_family_by_code(payload.code, db)
 
 def get_family_by_code(code: str, db: Session) -> ServiceFamilyOut:
-    sql = text("""        SELECT id, code, name, is_active, sort_order
+    sql = text("""
+        SELECT id, code, name, is_active, sort_order
         FROM service_families WHERE code = :code;
     """)
     row = db.execute(sql, {"code": code}).mappings().first()
@@ -155,7 +160,8 @@ def update_family(
 ):
     _ensure_schema(db)
     now = now_iso()
-    sql = text("""        UPDATE service_families
+    sql = text("""
+        UPDATE service_families
            SET code=:code, name=:name, is_active=:is_active, sort_order=:sort_order, updated_at=:ua
          WHERE id=:id;
     """)
@@ -174,7 +180,8 @@ def update_family(
     return get_family_by_id(family_id, db)
 
 def get_family_by_id(family_id: int, db: Session) -> ServiceFamilyOut:
-    sql = text("""        SELECT id, code, name, is_active, sort_order
+    sql = text("""
+        SELECT id, code, name, is_active, sort_order
         FROM service_families WHERE id = :id;
     """)
     row = db.execute(sql, {"id": family_id}).mappings().first()
@@ -208,26 +215,42 @@ def list_services(
     family_id: Optional[int] = Query(None),
     q: Optional[str] = Query(None, min_length=1, description="Search by code or name"),
     is_active: Optional[bool] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
+    """
+    Returns catalog services with joined family name (family_name) for FE convenience.
+    """
     _ensure_schema(db)
     clauses = ["1=1"]
-    params = {}
+    params = {"limit": limit}
     if family_id is not None:
-        clauses.append("family_id = :family_id")
+        clauses.append("s.family_id = :family_id")
         params["family_id"] = family_id
     if q:
-        clauses.append("(code LIKE :q OR name LIKE :q)")
+        clauses.append("(s.code LIKE :q OR s.name LIKE :q OR f.name LIKE :q)")
         params["q"] = f"%{q}%"
     if is_active is not None:
-        clauses.append("is_active = :active")
+        clauses.append("s.is_active = :active")
         params["active"] = 1 if is_active else 0
 
-    sql = text(f"""        SELECT id, family_id, code, name, uom, default_currency, is_active, description
-        FROM services_catalog
+    sql = text(f"""
+        SELECT
+            s.id,
+            s.family_id,
+            f.name AS family_name,
+            s.code,
+            s.name,
+            s.uom,
+            s.default_currency,
+            s.is_active,
+            s.description
+        FROM services_catalog s
+        JOIN service_families f ON f.id = s.family_id
         WHERE {' AND '.join(clauses)}
-        ORDER BY is_active DESC, name ASC;
-    """    )
+        ORDER BY s.is_active DESC, f.sort_order ASC, s.name ASC
+        LIMIT :limit;
+    """)
     rows = db.execute(sql, params).mappings().all()
     return rows
 
@@ -239,9 +262,10 @@ def create_service(payload: ServiceItemIn, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid family_id")
     now = now_iso()
     try:
-        sql = text("""            INSERT INTO services_catalog (family_id, code, name, uom, default_currency, is_active, description, created_at, updated_at)
+        sql = text("""
+            INSERT INTO services_catalog (family_id, code, name, uom, default_currency, is_active, description, created_at, updated_at)
             VALUES (:family_id, :code, :name, :uom, :cur, :active, :desc, :ca, :ua);
-        """        )
+        """)
         db.execute(sql, {
             "family_id": payload.family_id,
             "code": payload.code.strip(),
@@ -259,9 +283,21 @@ def create_service(payload: ServiceItemIn, db: Session = Depends(get_db)):
     return get_service_by_code(payload.code, db)
 
 def get_service_by_code(code: str, db: Session) -> ServiceItemOut:
-    sql = text("""        SELECT id, family_id, code, name, uom, default_currency, is_active, description
-        FROM services_catalog WHERE code=:code;
-    """    )
+    sql = text("""
+        SELECT
+            s.id,
+            s.family_id,
+            f.name AS family_name,
+            s.code,
+            s.name,
+            s.uom,
+            s.default_currency,
+            s.is_active,
+            s.description
+        FROM services_catalog s
+        JOIN service_families f ON f.id = s.family_id
+        WHERE s.code=:code;
+    """)
     row = db.execute(sql, {"code": code}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Service not found")
@@ -278,11 +314,12 @@ def update_service(
     if not fam:
         raise HTTPException(status_code=400, detail="Invalid family_id")
     now = now_iso()
-    sql = text("""        UPDATE services_catalog
+    sql = text("""
+        UPDATE services_catalog
            SET family_id=:family_id, code=:code, name=:name, uom=:uom, default_currency=:cur,
                is_active=:active, description=:desc, updated_at=:ua
          WHERE id=:id;
-    """    )
+    """)
     res = db.execute(sql, {
         "id": service_id,
         "family_id": payload.family_id,
@@ -301,9 +338,21 @@ def update_service(
     return get_service_by_id(service_id, db)
 
 def get_service_by_id(service_id: int, db: Session) -> ServiceItemOut:
-    sql = text("""        SELECT id, family_id, code, name, uom, default_currency, is_active, description
-        FROM services_catalog WHERE id=:id;
-    """    )
+    sql = text("""
+        SELECT
+            s.id,
+            s.family_id,
+            f.name AS family_name,
+            s.code,
+            s.name,
+            s.uom,
+            s.default_currency,
+            s.is_active,
+            s.description
+        FROM services_catalog s
+        JOIN service_families f ON f.id = s.family_id
+        WHERE s.id=:id;
+    """)
     row = db.execute(sql, {"id": service_id}).mappings().first()
     if not row:
         raise HTTPException(status_code=404, detail="Service not found")

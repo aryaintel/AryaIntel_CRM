@@ -1,6 +1,6 @@
 // Pathway: C:/Dev/AryaIntel_CRM/frontend/src/pages/services/ServicesCatalogPage.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { apiGet, apiPost, apiPut } from "../../lib/api";
+import { apiGet, apiPost, apiPut, apiPatch } from "../../lib/api";
 
 /**
  * ServicesCatalogPage — Salesforce-style UI, parallel to ProductsPage.tsx
@@ -194,12 +194,7 @@ export default function ServicesCatalogPage() {
 
   async function toggleFamilyActive(f: ServiceFamily) {
     try {
-      await fetch(`/api/service-families/${f.id}/toggle`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-        credentials: "include",
-      });
+      await apiPatch<ServiceFamily>(`/api/service-families/${f.id}/toggle`, {});
       await reloadFamilies(true);
     } catch (e) {
       // non-blocking
@@ -273,12 +268,7 @@ export default function ServicesCatalogPage() {
 
   async function toggleItemActive(it: ServiceItem) {
     try {
-      await fetch(`/api/services/${it.id}/toggle`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-        credentials: "include",
-      });
+      await apiPatch<ServiceItem>(`/api/services/${it.id}/toggle`, {});
       await reloadItems();
     } catch (e) {
       // non-blocking
