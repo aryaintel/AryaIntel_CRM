@@ -1,87 +1,99 @@
-#!/usr/bin/env python3
-# Pathway: C:/Dev/AryaIntel_CRM/backend/scripts/20251015_add_engine_category_map.py
-"""
-Create engine_category_map table to map products/families/services to engine categories (AN, EM, IE, Services).
-Idempotent: safe to re-run.
+# Idempotent schema helper for engine category mapping.
+# Exposes ensure_schema(engine) so the API can import and call it during startup.
+# Path: backend/scripts/20251015_add_engine_category_map.py
 
-Usage:
-  python backend/scripts/20251015_add_engine_category_map.py --db sqlite:///C:/Dev/AryaIntel_CRM/backend/app.db --seed
-"""
+from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
-from sqlalchemy import create_engine, text
+import os
+from pathlib import Path
+from sqlalchemy import text, create_engine
+from sqlalchemy.engine import Engine
 
-CREATE_SQL = """
-CREATE TABLE IF NOT EXISTS engine_category_map (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  scope TEXT NOT NULL CHECK(scope IN ('product_family','product','service')),
-  ref_id INTEGER NOT NULL,
-  category_code TEXT NOT NULL CHECK(category_code IN ('AN','EM','IE','Services')),
-  is_active INTEGER NOT NULL DEFAULT 1,
-  note TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-"""
-UNIQ_SQL = "CREATE UNIQUE INDEX IF NOT EXISTS ux_ecm_scope_ref ON engine_category_map(scope, ref_id);"
+ENGINE_CATEGORIES = [
+    ("AN", "Ammonium Nitrate", 10),
+    ("EM", "Emulsion", 20),
+    ("IE", "Initiating Explosives", 30),
+    ("Services", "Services", 40),
+]
 
-def now_iso():
-  return datetime.now(timezone.utc).isoformat()
+def ensure_schema(engine: Engine) -> None:
+    with engine.begin() as conn:
+        # engine_categories
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS engine_categories (
+                code TEXT PRIMARY KEY,
+                name TEXT,
+                sort_order INTEGER
+            )
+        """))
 
-def seed_defaults(conn):
-  # Seed by product_families name heuristics if available
-  try:
-    fam_rows = conn.execute(text("SELECT id, name FROM product_families")).fetchall()
-  except Exception:
-    print("[seed] skipped: product_families table not found")
-    return 0
-  if not fam_rows:
-    print("[seed] skipped: product_families empty")
-    return 0
+        # seed codes (upsert for SQLite)
+        for code, name, sort_order in ENGINE_CATEGORIES:
+            conn.execute(text("""
+                INSERT INTO engine_categories (code, name, sort_order)
+                VALUES (:code, :name, :order)
+                ON CONFLICT(code) DO UPDATE SET
+                    name=excluded.name,
+                    sort_order=excluded.sort_order
+            """), {"code": code, "name": name, "order": sort_order})
 
-  inserted = 0
-  for fid, name in fam_rows:
-    lname = (name or "").lower()
-    # Skip if a mapping already exists
-    exists = conn.execute(text(
-      "SELECT 1 FROM engine_category_map WHERE scope='product_family' AND ref_id=:rid LIMIT 1"
-    ), {"rid": fid}).fetchone()
-    if exists:
-      continue
+        # engine_category_map
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS engine_category_map (
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL,          -- 'product_family' | 'product'
+                ref_id INTEGER NOT NULL,      -- family.id or product.id
+                category_code TEXT NOT NULL,  -- FK to engine_categories.code
+                is_active INTEGER NOT NULL DEFAULT 1,
+                note TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
 
-    cat = None
-    if "bulk emulsion" in lname or "emulsion" in lname:
-      cat = "EM"
-    elif "anfo" in lname or "ammonium nitrate" in lname or lname.startswith("an ") or lname == "an" or "ammonium" in lname:
-      cat = "AN"
-    elif "detonat" in lname or "nonel" in lname or "cord" in lname or "booster" in lname or "ignit" in lname or "electronic detona" in lname:
-      cat = "IE"
+        # unique composite index so scope+ref is a single active row
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_ecm_scope_ref
+            ON engine_category_map(scope, ref_id)
+        """))
 
-    if cat:
-      conn.execute(text("""
-        INSERT INTO engine_category_map(scope, ref_id, category_code, is_active, note, created_at, updated_at)
-        VALUES('product_family', :rid, :cat, 1, :note, :ts, :ts)
-      """), {"rid": fid, "cat": cat, "note": f"seeded by name='{name}'", "ts": now_iso()})
-      inserted += 1
+def _sqlite_url_from_path(db_path: Path) -> str:
+    # SQLAlchemy on Windows expects sqlite:///C:/... for absolute paths
+    return "sqlite:///" + db_path.as_posix()
 
-  print(f"[seed] inserted default family mappings: {inserted}")
-  return inserted
+def _resolve_db_url(cli_db: str | None) -> str:
+    # Priority 1: CLI --db
+    if cli_db:
+        return cli_db
+    # Priority 2: env var
+    env = os.environ.get("DATABASE_URL")
+    if env:
+        return env
 
-def main():
-  ap = argparse.ArgumentParser()
-  ap.add_argument("--db", required=True, help="SQLAlchemy DB URL")
-  ap.add_argument("--seed", action="store_true", help="Seed default mappings by family names")
-  args = ap.parse_args()
-
-  engine = create_engine(args.db)
-  with engine.begin() as conn:
-    conn.execute(text(CREATE_SQL))
-    conn.execute(text(UNIQ_SQL))
-    print("[ok] engine_category_map ensured.")
-
-    if args.seed:
-      seed_defaults(conn)
+    # Priority 3: project manifest default (Windows dev path)
+    # Manifest says DB is at AryaIntel_CRM\backend\app.db
+    # Try to infer the absolute path based on this script's location.
+    script_dir = Path(__file__).resolve().parent  # .../backend/scripts
+    backend_dir = script_dir.parent               # .../backend
+    db_file = backend_dir / "app.db"
+    return _sqlite_url_from_path(db_file)
 
 if __name__ == "__main__":
-  main()
+    parser = argparse.ArgumentParser(description="Ensure engine category schema.")
+    parser.add_argument("--db", help="Database URL (e.g., sqlite:///C:/Dev/AryaIntel_CRM/backend/app.db)")
+    args = parser.parse_args()
+
+    db_url = _resolve_db_url(args.db)
+    # Make sure parent dir exists for SQLite file URLs
+    if db_url.startswith("sqlite:///"):
+        # Extract path portion after sqlite:///
+        raw = db_url[len("sqlite:///"):]
+        # Convert to Path; handle URL-style forward slashes on Windows
+        db_path = Path(raw)
+        db_parent = db_path.parent
+        if not db_parent.exists():
+            raise SystemExit(f"[ERROR] Database directory does not exist: {db_parent}")
+    engine = create_engine(db_url, future=True)
+    ensure_schema(engine)
+    print(f"[OK] engine_category_map schema ensured at: {db_url}")

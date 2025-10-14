@@ -1,6 +1,7 @@
+
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 import os
 import sqlite3
@@ -179,6 +180,10 @@ def _ensure_schema(con: sqlite3.Connection) -> None:
         # yeni referans id kolonu
         if not _column_exists(con, "price_book_entries", "price_term_id"):
             con.execute("ALTER TABLE price_book_entries ADD COLUMN price_term_id INTEGER NULL")
+
+    # --- engine categories + map (ensure) -----------------------------------
+    _ensure_engine_category_schema(con)
+
     con.commit()
 
 
@@ -216,6 +221,116 @@ def _resolve_price_term_id(con: sqlite3.Connection, payload: Dict[str, Any]) -> 
     return None
 
 
+# --------------------------- Engine Category helpers --------------------
+ENGINE_CATEGORY_SEED: Tuple[Tuple[str,str,int], ...] = (
+    ("AN", "Ammonium Nitrate", 10),
+    ("EM", "Emulsion", 20),
+    ("IE", "Initiating Explosives", 30),
+    ("Services", "Services", 40),
+)
+
+def _ensure_engine_category_schema(con: sqlite3.Connection) -> None:
+    # engine_categories
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS engine_categories (
+            code TEXT PRIMARY KEY,
+            name TEXT,
+            sort_order INTEGER
+        )
+        """
+    )
+    # seed
+    for code, name, sort_order in ENGINE_CATEGORY_SEED:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO engine_categories (code, name, sort_order)
+            VALUES (?,?,?)
+            """,
+            (code, name, sort_order),
+        )
+    # engine_category_map
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS engine_category_map (
+            id INTEGER PRIMARY KEY,
+            scope TEXT NOT NULL,
+            ref_id INTEGER NOT NULL,
+            category_code TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            note TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_ecm_scope_ref
+        ON engine_category_map (scope, ref_id)
+        """
+    )
+
+def _engine_code_exists(con: sqlite3.Connection, code: str) -> bool:
+    if not code or not isinstance(code, str):
+        return False
+    row = con.execute("SELECT 1 FROM engine_categories WHERE code = ?", (code,)).fetchone()
+    return bool(row)
+
+def _upsert_engine_category_map(con: sqlite3.Connection, scope: str, ref_id: int, category_code: Optional[str]) -> None:
+    """
+    - If category_code is a non-empty string: validate against engine_categories and upsert row (set is_active=1).
+    - If category_code is None or empty string: delete any existing row (clear mapping).
+    """
+    if category_code is None or str(category_code).strip() == "":
+        con.execute("DELETE FROM engine_category_map WHERE scope = ? AND ref_id = ?", (scope, ref_id))
+        return
+    code = str(category_code).strip()
+    if not _engine_code_exists(con, code):
+        raise HTTPException(422, f"Invalid engine category code: {code}")
+    con.execute(
+        """
+        INSERT INTO engine_category_map (scope, ref_id, category_code, is_active, note, created_at, updated_at)
+        VALUES (?, ?, ?, 1, NULL, datetime('now'), datetime('now'))
+        ON CONFLICT(scope, ref_id) DO UPDATE SET
+          category_code = excluded.category_code,
+          is_active = 1,
+          updated_at = datetime('now')
+        """,
+        (scope, ref_id, code),
+    )
+
+def _resolve_family_category(con: sqlite3.Connection, family_id: Optional[int]) -> Optional[str]:
+    if not family_id:
+        return None
+    r = con.execute(
+        """
+        SELECT category_code
+        FROM engine_category_map
+        WHERE scope = 'product_family' AND ref_id = ? AND is_active = 1
+        LIMIT 1
+        """,
+        (family_id,),
+    ).fetchone()
+    return r["category_code"] if r else None
+
+def _resolve_product_category(con: sqlite3.Connection, product_id: int, family_id: Optional[int]) -> Optional[str]:
+    # product override first
+    r = con.execute(
+        """
+        SELECT category_code
+        FROM engine_category_map
+        WHERE scope = 'product' AND ref_id = ? AND is_active = 1
+        LIMIT 1
+        """,
+        (product_id,),
+    ).fetchone()
+    if r:
+        return r["category_code"]
+    # else family default
+    return _resolve_family_category(con, family_id)
+
+
 # ---------------------------------------------------------------------
 # PRODUCT FAMILIES (CRUD)
 # ---------------------------------------------------------------------
@@ -223,12 +338,24 @@ def _resolve_price_term_id(con: sqlite3.Connection, payload: Dict[str, Any]) -> 
 @router.get("/product-families/")
 def list_product_families(active: Optional[bool] = None) -> Dict[str, Any]:
     with cx() as con:
-        sql = "SELECT * FROM product_families"
+        sql = """
+        SELECT pf.*,
+               (
+                 SELECT ecm.category_code
+                 FROM engine_category_map ecm
+                 WHERE ecm.scope='product_family' AND ecm.ref_id=pf.id AND ecm.is_active=1
+                 LIMIT 1
+               ) AS family_category_code
+        FROM product_families pf
+        """
         params: List[Any] = []
+        where = []
         if active is not None:
-            sql += " WHERE is_active = ?"
+            where.append("pf.is_active = ?")
             params.append(1 if active else 0)
-        sql += " ORDER BY is_active DESC, name ASC"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY pf.is_active DESC, pf.name ASC"
         rows = con.execute(sql, params).fetchall()
         return {"items": [_row_to_dict(r) for r in rows]}
 
@@ -245,6 +372,9 @@ def create_product_family(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "INSERT INTO product_families (name, description, is_active) VALUES (?,?,?)",
                 (name, _clean_desc(payload.get("description")), _to_db_bool(payload.get("is_active", True))),
             )
+            # Optional category_code upsert
+            if "category_code" in payload:
+                _upsert_engine_category_map(con, "product_family", int(cur.lastrowid), payload.get("category_code"))
             con.commit()
             return {"id": cur.lastrowid}
         except sqlite3.IntegrityError as e:
@@ -272,16 +402,23 @@ def update_product_family(fid: int, payload: Dict[str, Any]) -> Dict[str, Any]:
         sets.append("is_active = ?")
         params.append(_to_db_bool(payload.get("is_active")))
 
-    if not sets:
-        return {"updated": 0}
-
     with cx() as con:
         if not con.execute("SELECT 1 FROM product_families WHERE id = ?", (fid,)).fetchone():
             raise HTTPException(404, "Product family not found")
-        params.append(fid)
-        con.execute(f"UPDATE product_families SET {', '.join(sets)} WHERE id = ?", params)
+
+        updated = 0
+        if sets:
+            params.append(fid)
+            con.execute(f"UPDATE product_families SET {', '.join(sets)} WHERE id = ?", params)
+            updated = 1
+
+        # Optional category_code upsert/clear when key present
+        if "category_code" in payload:
+            _upsert_engine_category_map(con, "product_family", fid, payload.get("category_code"))
+            updated = 1 if updated == 0 else updated
+
         con.commit()
-        return {"updated": 1}
+        return {"updated": updated}
 
 
 @router.delete("/product-families/{fid}")
@@ -294,6 +431,8 @@ def delete_product_family(fid: int) -> Dict[str, Any]:
         ).fetchone()
         if in_use:
             raise HTTPException(400, "Cannot delete family: still referenced by products")
+        # also clear mapping if any
+        con.execute("DELETE FROM engine_category_map WHERE scope='product_family' AND ref_id=?", (fid,))
         con.execute("DELETE FROM product_families WHERE id = ?", (fid,))
         con.commit()
         return {"deleted": True}
@@ -317,7 +456,12 @@ def list_products(
 
         if use_fts:
             sql = (
-                "SELECT p.* FROM products_fts f "
+                "SELECT p.*, "
+                "  (SELECT category_code FROM engine_category_map e "
+                "   WHERE e.scope='product' AND e.ref_id=p.id AND e.is_active=1 LIMIT 1) AS product_category_code, "
+                "  (SELECT category_code FROM engine_category_map e2 "
+                "   WHERE e2.scope='product_family' AND e2.ref_id=IFNULL(p.product_family_id,-1) AND e2.is_active=1 LIMIT 1) AS family_category_code "
+                "FROM products_fts f "
                 "JOIN products p ON p.id = f.rowid "
                 "WHERE products_fts MATCH ? AND p.deleted_at IS NULL "
             )
@@ -346,18 +490,25 @@ def list_products(
                 cnt_params.append(family_id)
             total = con.execute(cnt_sql, cnt_params).fetchone()["c"]
         else:
-            sql = "SELECT * FROM products WHERE deleted_at IS NULL "
+            sql = (
+                "SELECT p.*, "
+                "  (SELECT category_code FROM engine_category_map e "
+                "   WHERE e.scope='product' AND e.ref_id=p.id AND e.is_active=1 LIMIT 1) AS product_category_code, "
+                "  (SELECT category_code FROM engine_category_map e2 "
+                "   WHERE e2.scope='product_family' AND e2.ref_id=IFNULL(p.product_family_id,-1) AND e2.is_active=1 LIMIT 1) AS family_category_code "
+                "FROM products p WHERE p.deleted_at IS NULL "
+            )
             if q:
                 like = f"%{q}%"
-                sql += "AND (code LIKE ? OR name LIKE ? OR IFNULL(description,'') LIKE ?) "
+                sql += "AND (p.code LIKE ? OR p.name LIKE ? OR IFNULL(p.description,'') LIKE ?) "
                 params += [like, like, like]
             if active is not None:
-                sql += "AND is_active = ? "
+                sql += "AND p.is_active = ? "
                 params.append(1 if active else 0)
             if family_id is not None:
-                sql += "AND IFNULL(product_family_id, 0) = ? "
+                sql += "AND IFNULL(p.product_family_id, 0) = ? "
                 params.append(family_id)
-            sql += "ORDER BY id DESC LIMIT ? OFFSET ?"
+            sql += "ORDER BY p.id DESC LIMIT ? OFFSET ?"
             params += [limit, offset]
             rows = con.execute(sql, params).fetchall()
 
@@ -375,7 +526,13 @@ def list_products(
                 cnt_params.append(family_id)
             total = con.execute(cnt_sql, cnt_params).fetchone()["c"]
 
-        items = [_row_to_dict(r) for r in rows]
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            # resolved category: product override -> family default
+            resolved = d.get("product_category_code") or d.get("family_category_code")
+            d["category_code"] = resolved
+            items.append(d)
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -384,11 +541,22 @@ def list_products(
 def get_product(pid: int) -> Dict[str, Any]:
     with cx() as con:
         r = con.execute(
-            "SELECT * FROM products WHERE id = ? AND deleted_at IS NULL", (pid,)
+            """
+            SELECT p.*,
+                   (SELECT category_code FROM engine_category_map e
+                    WHERE e.scope='product' AND e.ref_id=p.id AND e.is_active=1 LIMIT 1) AS product_category_code,
+                   (SELECT category_code FROM engine_category_map e2
+                    WHERE e2.scope='product_family' AND e2.ref_id=IFNULL(p.product_family_id,-1) AND e2.is_active=1 LIMIT 1) AS family_category_code
+            FROM products p
+            WHERE p.id = ? AND p.deleted_at IS NULL
+            """,
+            (pid,)
         ).fetchone()
         if not r:
             raise HTTPException(404, "Product not found")
-        return _row_to_dict(r)
+        d = _row_to_dict(r)
+        d["category_code"] = d.get("product_category_code") or d.get("family_category_code")
+        return d
 
 
 @router.post("/products")
@@ -422,6 +590,9 @@ def create_product(payload: Dict[str, Any]) -> Dict[str, Any]:
                 f"INSERT INTO products ({', '.join(cols)}) VALUES ({', '.join(['?']*len(cols))})",
                 values,
             )
+            # Optional category_code upsert for product override
+            if "category_code" in payload:
+                _upsert_engine_category_map(con, "product", int(cur.lastrowid), payload.get("category_code"))
             con.commit()
             return {"id": cur.lastrowid}
         except sqlite3.IntegrityError as e:
@@ -457,22 +628,31 @@ def update_product(pid: int, payload: Dict[str, Any]) -> Dict[str, Any]:
             sets.append(f"{k} = ?")
             params.append(payload.get(k))
 
-    if not sets:
-        return {"updated": 0}
-
     with cx() as con:
         if not con.execute("SELECT 1 FROM products WHERE id = ? AND deleted_at IS NULL", (pid,)).fetchone():
             raise HTTPException(404, "Product not found")
-        params.append(pid)
-        con.execute(f"UPDATE products SET {', '.join(sets)} WHERE id = ? AND deleted_at IS NULL", params)
+
+        updated = 0
+        if sets:
+            params.append(pid)
+            con.execute(f"UPDATE products SET {', '.join(sets)} WHERE id = ? AND deleted_at IS NULL", params)
+            updated = 1
+
+        # Optional category_code upsert/clear when key present
+        if "category_code" in payload:
+            _upsert_engine_category_map(con, "product", pid, payload.get("category_code"))
+            updated = 1 if updated == 0 else updated
+
         con.commit()
-        return {"updated": 1}
+        return {"updated": updated}
 
 
 @router.delete("/products/{pid}")
 @router.delete("/products/{pid}/")
 def delete_product(pid: int, hard: bool = Query(False, description="true=hard delete")) -> Dict[str, Any]:
     with cx() as con:
+        # clear product mapping regardless of soft/hard
+        con.execute("DELETE FROM engine_category_map WHERE scope='product' AND ref_id=?", (pid,))
         if hard:
             con.execute("DELETE FROM products WHERE id = ?", (pid,))
         else:
