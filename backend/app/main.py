@@ -1,4 +1,4 @@
-# C:/Dev/AryaIntel_CRM/backend/app/main.py
+# Pathway: C:/Dev/AryaIntel_CRM/backend/app/main.py
 from fastapi import FastAPI, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,13 +8,18 @@ from .api.deps import get_current_user, CurrentUser
 # ---- Routers ----
 # Pricing & formulation
 from .api import service_pricing, boq_pricing, formulations_api, formulation_links_api
-from .api.escalation import router as escalation_router
-from app.api.rise_fall_api import router as rise_fall_router  # keep absolute to match pkg layout
-from app.api.rebates_runtime import router as rebates_runtime_router
-from app.api.scenario_summary import router as scenario_summary_router  # unified Summary API
-from app.api.price_terms import router as price_terms_router
+from .api.escalation import router as escalation_router  # FIX: was escalation_routera
+from .api.rise_fall_api import router as rise_fall_router
+from .api.rebates_runtime import router as rebates_runtime_router
+from .api.scenario_summary import router as scenario_summary_router
+from .api.price_terms import router as price_terms_router
 from .api import cost_books_api
 from .api.services_catalog_api import router as services_catalog_router
+
+# Run Engine & diagnostics APIs
+from .api.run_engine_api import router as run_engine_router
+from .api.engine_facts_api import router as engine_facts_router
+from .api.boq_diagnostics_api import router as boq_diag_router
 
 # Core modules
 from .api import (
@@ -28,29 +33,23 @@ from .api import (
     leads,
     business_cases,
     stages,
-    scenario_boq as boq,       # IMPORTANT: only mount boq.router (do NOT also mount router_alias)
+    scenario_boq as boq,
     twc,
     scenario_capex,
     scenario_services,
     scenario_overheads,
     scenario_fx,
     scenario_tax,
-    workflow,                  # mounted under /api below
-    index_series_api,          # has its own "/api/index-series" prefix
-    escalations_api,           # already API-prefixed inside the router
+    workflow,
+    index_series_api,
+    escalations_api,
 )
 
-# Products, Price Books, Cost Books
 from .api.products_api import router as products_router
-from .api.cost_books_api import router as cost_books_router  # /api/cost-books/... (CRUD)
-
-# Rebates (Scenario-level CRUD)
+from .api.cost_books_api import router as cost_books_router
 from .api.rebates_api import router as rebates_router
 from .api.db_schema import router as db_schema_router
-
-# NEW: OPEX (headers, lines, kv, allocations, basis-aware monthly allocation)
 from .api.opex_api import router as opex_router
-
 
 app = FastAPI(
     title="Arya CRM API",
@@ -59,9 +58,6 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# ---------------------------
-# CORS (frontend dev servers)
-# ---------------------------
 DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -72,7 +68,6 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost",
     "http://127.0.0.1",
 ]
-
 
 def _resolve_allowed_origins() -> list[str]:
     raw = getattr(settings, "CORS_ALLOW_ORIGINS", None)
@@ -86,10 +81,8 @@ def _resolve_allowed_origins() -> list[str]:
         return DEFAULT_CORS_ORIGINS
     return vals or DEFAULT_CORS_ORIGINS
 
-
 ALLOW_ORIGINS = _resolve_allowed_origins()
 
-# 1) CORSMiddleware — must be added BEFORE routers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOW_ORIGINS,
@@ -98,7 +91,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2) Safety net: enforce proper CORS headers on all responses
 @app.middleware("http")
 async def ensure_cors_headers(request: Request, call_next):
     response = await call_next(request)
@@ -112,27 +104,12 @@ async def ensure_cors_headers(request: Request, call_next):
         response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
-
-# Optional debug middleware
-@app.middleware("http")
-async def _debug_auth(request: Request, call_next):
-    if request.url.path.startswith("/api/scenarios/") and ("/rebates" in request.url.path):
-        print(
-            ">>> DEBUG REBATES CALL",
-            "Path=", request.url.path,
-            "Origin=", request.headers.get("origin"),
-            "Cookie=", bool(request.headers.get("cookie")),
-        )
-    return await call_next(request)
-
-
 # ---------------------------
 # Health & Current User
 # ---------------------------
 @app.get("/health", tags=["system"])
 def health():
     return {"status": "ok"}
-
 
 @app.get("/me", tags=["auth"])
 def me(current: CurrentUser = Depends(get_current_user)):
@@ -143,8 +120,6 @@ def me(current: CurrentUser = Depends(get_current_user)):
         "role": current.role_name,
     }
 
-
-# Legacy alias for older frontends
 @app.get("/auth/me", tags=["auth"], status_code=status.HTTP_200_OK)
 def me_alias(current: CurrentUser = Depends(get_current_user)):
     return {
@@ -154,12 +129,9 @@ def me_alias(current: CurrentUser = Depends(get_current_user)):
         "role": current.role_name,
     }
 
-
 # ---------------------------
 # Routers
 # ---------------------------
-
-# Auth & basic CRM
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(contacts.router)
@@ -170,46 +142,44 @@ app.include_router(secure.router)
 app.include_router(leads.router)
 app.include_router(stages.router)
 
-# Business cases & scenarios
 app.include_router(business_cases.router)
-app.include_router(boq.router)                    # BOQ  → /scenarios/...
-app.include_router(twc.router)                    # TWC
-app.include_router(scenario_capex.router)         # CAPEX
-app.include_router(scenario_services.router)      # SERVICES (OPEX UI mevcut)
-app.include_router(scenario_overheads.router)     # Overheads
-app.include_router(scenario_fx.router)            # FX
-app.include_router(scenario_tax.router)           # TAX
-app.include_router(rebates_router)                # REBATES (CRUD)
-app.include_router(scenario_summary_router)       # SUMMARY (BOQ + rebates overlay)
+app.include_router(boq.router)
+app.include_router(twc.router)
+app.include_router(scenario_capex.router)
+app.include_router(scenario_services.router)
+app.include_router(scenario_overheads.router)
+app.include_router(scenario_fx.router)
+app.include_router(scenario_tax.router)
+app.include_router(rebates_router)
+app.include_router(scenario_summary_router)
 
-# Workflow & pricing/escalation
-# NOTE: Workflow is mounted under /api to match FE that calls /api/scenarios/...
+# Mount workflow under /api to match FE paths
 app.include_router(workflow.router, prefix="/api")
 
-app.include_router(service_pricing.router)        # PRICE PREVIEW (service)
-app.include_router(boq_pricing.router)            # PRICE PREVIEW (boq)
-app.include_router(formulations_api.router)       # FORMULATIONS CRUD
+app.include_router(service_pricing.router)
+app.include_router(boq_pricing.router)
+app.include_router(formulations_api.router)
 app.include_router(formulation_links_api.router)
 
-# Routers that already carry their own API prefixes
-app.include_router(index_series_api.router)       # /api/index-series/...
-app.include_router(escalations_api.router)        # /api/escalations/...
-
+app.include_router(index_series_api.router)
+app.include_router(escalations_api.router)
 app.include_router(escalation_router)
 app.include_router(rise_fall_router)
 
-# Products, Price Books, Cost Books
-app.include_router(products_router)               # products + price books
-app.include_router(cost_books_router)             # /api/cost-books/... (CRUD)
-app.include_router(cost_books_api.router_products) # /api/products/{id}/best-cost
+app.include_router(products_router)
+app.include_router(cost_books_router)
+app.include_router(cost_books_api.router_products)
 
-# Rebates runtime (preview endpoint used by Summary & others)
 app.include_router(rebates_runtime_router)
 
-# Debug & tooling
 app.include_router(db_schema_router)
 app.include_router(price_terms_router)
 
-# NEW: OPEX API (headers/lines/kv/alloc + basis-aware monthly allocation summary)
+# Engine & diagnostics
+app.include_router(run_engine_router)
+app.include_router(engine_facts_router)
+app.include_router(boq_diag_router)
+
+# Other domain APIs
 app.include_router(opex_router)
 app.include_router(services_catalog_router)

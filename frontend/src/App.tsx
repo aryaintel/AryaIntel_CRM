@@ -50,6 +50,9 @@ import Health from "./pages/debug/Health";
 // NEW: BOQ Console (2. özellik)
 import BoqConsole from "./pages/BoqConsole";
 
+// NEW: Run Engine page
+import RunEnginePage from "./pages/engine/RunEnginePage";
+
 import { apiGet, ApiError } from "./lib/api";
 import { clearToken, getToken, AUTH_EVENT } from "./lib/auth";
 
@@ -75,6 +78,7 @@ function usePageTitle() {
   // Services top-level page
   if (pathname.startsWith("/services")) return "Services"; // NEW
   if (pathname.startsWith("/boq-console")) return "BOQ Console";
+  if (pathname.startsWith("/engine/run")) return "Run Engine"; // NEW
   if (pathname.startsWith("/users")) return "Users";
   if (pathname.startsWith("/roles")) return "Roles";
   if (pathname.startsWith("/login")) return "Login";
@@ -289,6 +293,18 @@ export default function App() {
             BOQ Console
           </NavLink>
 
+          {/* NEW: Run Engine */}
+          <NavLink
+            to="/engine/run"
+            className={({ isActive }) =>
+              `block px-3 py-2 rounded-lg hover:bg-indigo-50 ${
+                isActive ? "bg-indigo-100 text-indigo-700" : ""
+              }`
+            }
+          >
+            Run Engine
+          </NavLink>
+
           {/* Business Case / Scenario menüden değil, detaydan gidiliyor */}
           {isAdmin && (
             <>
@@ -496,6 +512,16 @@ export default function App() {
               element={
                 <RequireAuth>
                   <BoqConsole />
+                </RequireAuth>
+              }
+            />
+
+            {/* NEW: Run Engine rotası */}
+            <Route
+              path="/engine/run"
+              element={
+                <RequireAuth>
+                  <RunEnginePage />
                 </RequireAuth>
               }
             />

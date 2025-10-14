@@ -1018,3 +1018,50 @@ class ScenarioRebateLump(Base):
         Index("ix_lumps_rebate", "rebate_id"),
         Index("ix_lumps_period", "year", "month"),
     )
+
+# =========================
+# Engine (Facts & Runs)
+# =========================
+class EngineSheet(Base):
+    __tablename__ = "engine_sheets"
+    code = Column(String, primary_key=True)
+    name = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=True, default=0)
+
+
+class EngineCategory(Base):
+    __tablename__ = "engine_categories"
+    code = Column(String, primary_key=True)
+    name = Column(String, nullable=True)
+    sort_order = Column(Integer, nullable=True, default=0)
+
+
+class EngineRun(Base):
+    __tablename__ = "engine_runs"
+    id = Column(Integer, primary_key=True, index=True)
+    scenario_id = Column(Integer, nullable=True)  # intentionally no FK to keep portability
+    started_at = Column(DateTime, server_default=func.now(), nullable=False)
+    finished_at = Column(DateTime, nullable=True)
+    options_json = Column(Text, nullable=True)
+# Pathway: C:/Dev/AryaIntel_CRM/backend/app/api/__init__.py
+"""API package marker (no side-effects). Routers are wired in app/main.py."""
+__all__: list[str] = []
+
+
+class EngineFactMonthly(Base):
+    __tablename__ = "engine_facts_monthly"
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, nullable=True)  # intentionally no FK for portability
+    scenario_id = Column(Integer, nullable=True)
+
+    sheet_code = Column(String, ForeignKey("engine_sheets.code", ondelete="RESTRICT"), nullable=False)
+    category_code = Column(String, ForeignKey("engine_categories.code", ondelete="RESTRICT"), nullable=False)
+
+    yyyymm = Column(Integer, nullable=False)  # YYYYMM
+    value = Column(Numeric(18, 6), nullable=False, default=0)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sheet_code", "category_code", "yyyymm", name="ux_engine_facts"),
+        Index("ix_engine_facts_scenario", "scenario_id", "yyyymm"),
+    )
