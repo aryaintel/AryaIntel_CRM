@@ -1,4 +1,3 @@
-# Pathway: C:/Dev/AryaIntel_CRM/backend/app/api/run_engine_api.py
 from __future__ import annotations
 
 from typing import List, Dict, Optional, Literal, Any, Tuple
@@ -32,6 +31,7 @@ class RunEngineRequest(BaseModel):
     categories: List[EngineCategory]
     options: EngineOptions = Field(default_factory=EngineOptions)
     persist: bool = False  # persist to engine_facts_monthly
+    include_facts: bool = False  # NEW: also return finance facts in preview
 
 class EngineLocks(BaseModel):
     rise_and_fall: bool  # true means locked ON (cannot be turned off)
@@ -73,11 +73,6 @@ def _ym_series(start: date, count: int) -> List[str]:
     return out
 
 def _has_rise_fall_policy(db: Session, scenario_id: int, selected_categories: Optional[List[str]] = None) -> bool:
-    """
-    Case-insensitive, scope-aware policy check.
-    - If selected_categories provided, require a policy whose scope is either 'all' or in selected categories.
-    - Else, any active policy among tokens ('all','an','em','ie','services','capex') suffices.
-    """
     cats = []
     for c in (selected_categories or []):
         if not c:
@@ -110,10 +105,12 @@ def _apply_dso_to_cash(accrual: List[float], dso_days: Optional[int]) -> List[fl
 # ---------------------
 # Data fetchers
 # ---------------------
-def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int, start: date) -> List[float]:
-    sched = [0.0] * months
+def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int, start: date) -> Tuple[List[float], List[float]]:
+    """Returns (revenue_accrual, cogs_accrual) series from BOQ (qty*price, qty*unit_cogs)."""
+    rev = [0.0] * months
+    cogs = [0.0] * months
     rows = db.execute(text("""
-        SELECT quantity, unit_price, frequency, start_year, start_month, months as row_months
+        SELECT quantity, unit_price, unit_cogs, frequency, start_year, start_month, months as row_months
         FROM scenario_boq_items
         WHERE scenario_id = :sid AND (section = :section OR :section = 'ALL')
           AND (is_active = 1)
@@ -121,7 +118,9 @@ def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int,
     for r in rows:
         qty = float(r["quantity"] or 0.0)
         price = float(r["unit_price"] or 0.0)
-        total = qty * price
+        ucogs = float(r["unit_cogs"] or 0.0)
+        rev_total = qty * price
+        cogs_total = qty * ucogs
         freq = (r["frequency"] or "monthly").lower()
         sy = int(r["start_year"]) if r["start_year"] is not None else start.year
         sm = int(r["start_month"]) if r["start_month"] is not None else start.month
@@ -130,20 +129,23 @@ def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int,
         if offset < 0: offset = 0
         if offset >= months: continue
         if freq == "once":
-            sched[offset] += total
+            rev[offset] += rev_total
+            cogs[offset] += cogs_total
         elif freq == "monthly":
             span = min(months - offset, max(1, rm))
             for i in range(span):
-                sched[offset + i] += total
+                rev[offset + i] += rev_total
+                cogs[offset + i] += cogs_total
         else:
             span = min(months - offset, max(1, rm))
-            per = total / span if span > 0 else 0.0
+            per_rev = rev_total / span if span > 0 else 0.0
+            per_cogs = cogs_total / span if span > 0 else 0.0
             for i in range(span):
-                sched[offset + i] += per
-    return sched
+                rev[offset + i] += per_rev
+                cogs[offset + i] += per_cogs
+    return rev, cogs
 
 def _schedule_services_expense_raw(db: Session, scenario_id: int, months: int, start: date) -> Tuple[List[float], List[Optional[str]]]:
-    """Returns expense schedule and per-month currency (for FX)."""
     sched = [0.0] * months
     cur_series: List[Optional[str]] = [None] * months
     rows = db.execute(text("""
@@ -210,7 +212,6 @@ def _load_index_series(db: Session, code: str) -> Dict[Tuple[int,int], float]:
     return d
 
 def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int, category: CategoryCode) -> List[float]:
-    """Returns per-month multiplier (1.0 if no policy). Combines multiple policies multiplicatively."""
     mult = [1.0] * months
     rows = db.execute(text("""
         SELECT scope, method, fixed_pct, index_code, base_year, base_month, step_per_month, freq, is_active
@@ -221,7 +222,6 @@ def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int
         return mult
     for r in rows:
         scope = (r["scope"] or "ALL").upper()
-        # Only apply if scope matches category
         if scope not in ("ALL","AN","EM","IE","SERVICES"):
             continue
         if scope != "ALL" and (
@@ -286,7 +286,6 @@ def _load_rebates(db: Session, scenario_id: int) -> Dict[str, Any]:
     return {"head": head, "tiers": tiers_map, "lumps": lumps_map}
 
 def _apply_rebates(accrual_rev: List[float], start: date, months: int, rb: Dict[str, Any]) -> Tuple[List[float], List[float]]:
-    """Returns (accrual_net_revenue, cash_rebate_outflow). basis='revenue' only."""
     accrual_net = accrual_rev[:]
     cash_out = [0.0] * months
     for h in rb["head"]:
@@ -355,6 +354,13 @@ def _apply_tax_on_services(db: Session, scenario_id: int, start: date, base_seri
 # ---------------------
 # Persist helpers
 # ---------------------
+def _parse_category_from_name(name: str) -> str:
+    """Extract category token after first '-' and before optional '.'"""
+    if "-" not in name:
+        return "ALL"
+    tail = name.split("-", 1)[1]
+    return tail.split(".", 1)[0]
+
 def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, generated: List[SheetPayload]) -> Tuple[int, Optional[int]]:
     """Insert a run row and facts; returns (rows_inserted, run_id)."""
     # Ensure engine tables exist (idempotent runtime guard)
@@ -421,11 +427,9 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
 
     inserted = 0
     for s in generated:
-        # name format "c.Sales-AN"
-        if "-" in s.name:
-            sheet_code, category_code = s.name.split("-", 1)
-        else:
-            sheet_code, category_code = s.name, "ALL"
+        # Persist full sheet name (e.g., "oA.Finance-AN.Revenue") so FE can filter exactly.
+        sheet_code = s.name
+        category_code = _parse_category_from_name(s.name)
         months = s.months
         vals = s.values
         for i in range(len(vals)):
@@ -459,43 +463,57 @@ def run_engine(
     months = sc["months"]
     months_axis = _ym_series(sc["start_date"], months)
 
-    # Enabled categories first (for scope-aware R&F lock detection)
     enabled_codes = [c.code for c in req.categories if c.enabled]
 
-    # Rise & Fall lock (case-insensitive and scope-aware: 'all' or any selected category)
+    # R&F lock (scope-aware)
     locks = EngineLocks(rise_and_fall=_has_rise_fall_policy(db, scenario_id, enabled_codes))
 
-    # Fetch TWC for cash timing (optional)
+    # TWC (DSO)
     twc = db.execute(text("""
         SELECT dso_days FROM scenario_twc WHERE scenario_id = :sid LIMIT 1
     """), {"sid": scenario_id}).mappings().first()
     dso_days = int(twc["dso_days"]) if twc and twc["dso_days"] is not None else 0
 
-    sec_map = {"AN": "AN", "EM": "EM", "IE": "IE"}
     generated: List[SheetPayload] = []
 
     for code in enabled_codes:
         if code in ("AN", "EM", "IE"):
-            accr = _schedule_from_boq(db, scenario_id, sec_map[code], months, sc["start_date"])
+            rev, cogs = _schedule_from_boq(db, scenario_id, code, months, sc["start_date"])
 
-            # Rise & Fall (if enabled or locked)
+            # Rise & Fall (if enabled or locked) — apply to both revenue & cogs
             if req.options.rise_and_fall or locks.rise_and_fall:
                 rf_mult = _build_rf_multiplier(db, scenario_id, sc["start_date"], months, code)
-                accr = [round(accr[i] * rf_mult[i], 6) for i in range(months)]
+                rev = [rev[i] * rf_mult[i] for i in range(months)]
+                cogs = [cogs[i] * rf_mult[i] for i in range(months)]
 
-            # Rebates (revenue-based)
+            # Rebates (only on revenue accrual)
             if req.options.rebates_apply:
-                rebates = _load_rebates(db, scenario_id)
-                accr_net, rebates_cash = _apply_rebates(accr, sc["start_date"], months, rebates)
+                rev_net, rebates_cash = _apply_rebates(rev, sc["start_date"], months, _load_rebates(db, scenario_id))
             else:
-                accr_net, rebates_cash = accr[:], [0.0]*months
+                rev_net, rebates_cash = rev[:], [0.0] * months
 
-            cash_in = _apply_dso_to_cash(accr_net, dso_days if req.options.twc_apply else 0)
+            gp = [rev_net[i] - cogs[i] for i in range(months)]
+            cash_in = _apply_dso_to_cash(rev_net, dso_days if req.options.twc_apply else 0)
 
-            generated.append(SheetPayload(name=f"c.Sales-{code}", months=months_axis, values=[round(x, 2) for x in accr_net]))
-            generated.append(SheetPayload(name=f"oA.Finance-{code}", months=months_axis, values=[round(x, 2) for x in accr_net]))
-            oq_vals = [round(cash_in[i] + rebates_cash[i], 2) for i in range(months)]
-            generated.append(SheetPayload(name=f"oQ.Finance-{code}", months=months_axis, values=oq_vals))
+            def R(lst): return [round(x, 2) for x in lst]
+
+            # c.Sales (index/ratios) – keep legacy
+            generated.append(SheetPayload(name=f"c.Sales-{code}", months=months_axis, values=R(rev_net)))
+
+            # oA – accrual facts split
+            oa_prefix = f"oA.Finance-{code}"
+            oq_prefix = f"oQ.Finance-{code}"
+            part = [
+                SheetPayload(name=f"{oa_prefix}.Revenue", months=months_axis, values=R(rev_net)),
+                SheetPayload(name=f"{oa_prefix}.COGS",    months=months_axis, values=R(cogs)),
+                SheetPayload(name=f"{oa_prefix}.GP",      months=months_axis, values=R(gp)),
+            ]
+            generated.extend(part)
+
+            # oQ – simple cash timing from revenue net rebates (COGS assumed same-month cash out in this MVB)
+            generated.append(SheetPayload(name=f"{oq_prefix}.Revenue", months=months_axis, values=R(cash_in)))
+            generated.append(SheetPayload(name=f"{oq_prefix}.COGS",    months=months_axis, values=R(cogs)))
+            generated.append(SheetPayload(name=f"{oq_prefix}.GP",      months=months_axis, values=R([cash_in[i]-cogs[i] for i in range(months)])))
 
         elif code == "Services":
             expense_raw, svc_curs = _schedule_services_expense_raw(db, scenario_id, months, sc["start_date"])
@@ -508,18 +526,28 @@ def run_engine(
             # Rise & Fall / escalation on services
             if req.options.rise_and_fall or locks.rise_and_fall:
                 rf_mult = _build_rf_multiplier(db, scenario_id, sc["start_date"], months, code)
-                expense = [round(expense[i] * rf_mult[i], 6) for i in range(months)]
+                expense = [expense[i] * rf_mult[i] for i in range(months)]
 
             # Tax (services) if apply
             if req.options.tax_apply:
                 expense = _apply_tax_on_services(db, scenario_id, sc["start_date"], expense)
 
             zeros = [0.0] * months
-            generated.append(SheetPayload(name="c.Sales-Services", months=months_axis, values=zeros))
-            oa_vals = [-round(x, 2) for x in expense]
-            generated.append(SheetPayload(name="oA.Finance-Services", months=months_axis, values=oa_vals))
-            oq_vals = oa_vals[:]
-            generated.append(SheetPayload(name="oQ.Finance-Services", months=months_axis, values=oq_vals))
+            def R(lst): return [round(x, 2) for x in lst]
+
+            # Keep legacy sales/services index
+            generated.append(SheetPayload(name="c.Sales-Services", months=months_axis, values=R(zeros)))
+
+            # Accrual & cash split for Services (Revenue=0, COGS=expense, GP = -expense)
+            oa_prefix = "oA.Finance-Services"
+            oq_prefix = "oQ.Finance-Services"
+            generated.append(SheetPayload(name=f"{oa_prefix}.Revenue", months=months_axis, values=R(zeros)))
+            generated.append(SheetPayload(name=f"{oa_prefix}.COGS",    months=months_axis, values=R([-x for x in expense])))
+            generated.append(SheetPayload(name=f"{oa_prefix}.GP",      months=months_axis, values=R([-x for x in expense])))
+
+            generated.append(SheetPayload(name=f"{oq_prefix}.Revenue", months=months_axis, values=R(zeros)))
+            generated.append(SheetPayload(name=f"{oq_prefix}.COGS",    months=months_axis, values=R([-x for x in expense])))
+            generated.append(SheetPayload(name=f"{oq_prefix}.GP",      months=months_axis, values=R([-x for x in expense])))
 
     persisted_rows = 0
     run_id: Optional[int] = None
@@ -529,6 +557,7 @@ def run_engine(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Persist failed: {e}")
 
+    # If include_facts requested, nothing more to do here — 'generated' already carries the needed series.
     return RunEngineResult(
         scenario_id=sc["id"],
         generated=generated,

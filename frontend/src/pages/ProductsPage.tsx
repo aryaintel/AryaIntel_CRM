@@ -1,3 +1,4 @@
+
 // frontend/src/pages/ProductsPage.tsx
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../lib/api";
@@ -9,6 +10,18 @@ import {
   type ProductFamily,
 } from "../lib/apiProducts";
 import { useNavigate } from "react-router-dom";
+
+/* --------------------------------------------------------------------------
+ * Engine Category Codes (UI options)
+ * -------------------------------------------------------------------------- */
+const ENGINE_CATEGORY_CODES = ["AN", "EM", "IE", "Services"] as const;
+type EngineCategory = (typeof ENGINE_CATEGORY_CODES)[number];
+const ENGINE_CATEGORY_LABEL: Record<EngineCategory, string> = {
+  AN: "Ammonium Nitrate",
+  EM: "Emulsion",
+  IE: "Initiating Explosives",
+  Services: "Services",
+};
 
 type Product = {
   id: number;
@@ -23,6 +36,11 @@ type Product = {
   is_active: boolean;
   metadata?: string | null;
   product_family_id?: number | null;
+
+  // backend additions
+  category_code?: string | null; // resolved
+  product_category_code?: string | null; // override
+  family_category_code?: string | null; // default
 };
 type PriceBook = { id: number; name: string; currency?: string | null };
 type PriceBookEntry = {
@@ -42,7 +60,8 @@ export default function ProductsPage() {
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Product | null>(null);
-  const [editing, setEditing] = useState<Partial<Product> | null>(null);
+  const [editing, setEditing] = useState<Partial<Product> & { category_code?: string } | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [tab, setTab] = useState<"overview" | "pricebooks" | "audit">("overview");
   const [books, setBooks] = useState<PriceBook[]>([]);
   const [bookEntries, setBookEntries] = useState<PriceBookEntry[]>([]);
@@ -58,9 +77,8 @@ export default function ProductsPage() {
     | null
   >(null);
 
-  // ---------- Robust Product Family loader (Tender categories) ----------
+  // ---------- Product Families ----------
   const loadFamilies = useCallback(async () => {
-    // 1) Primary: helper (likely /api/product-families under the hood)
     try {
       const pf = await listProductFamilies({ active: true });
       const items = (pf.items ?? pf ?? []) as ProductFamily[];
@@ -68,25 +86,18 @@ export default function ProductsPage() {
         setFamilies(sortFamilies(items));
         return;
       }
-    } catch {
-      /* try fallbacks */
-    }
-    // 2) Fallbacks: common BE shapes
+    } catch {}
     const candidates = ["/api/product-families?active=true", "/api/product_families?active=true", "/api/products/families?active=true"];
     for (const url of candidates) {
       try {
         const res: any = await apiGet(url);
-        const items: ProductFamily[] =
-          res?.items ?? res?.data ?? (Array.isArray(res) ? res : []);
+        const items: ProductFamily[] = res?.items ?? res?.data ?? (Array.isArray(res) ? res : []);
         if (items?.length) {
           setFamilies(sortFamilies(items));
           return;
         }
-      } catch {
-        /* try next */
-      }
+      } catch {}
     }
-    // 3) Nothing found → keep empty; saving will allow "None"
     setFamilies([]);
   }, []);
 
@@ -96,7 +107,7 @@ export default function ProductsPage() {
     );
   }
 
-  // ürünler
+  // products
   useEffect(() => {
     (async () => {
       setLoading(true);
@@ -112,12 +123,10 @@ export default function ProductsPage() {
     })();
   }, []);
 
-  // product families (Tender categories)
   useEffect(() => {
     loadFamilies();
   }, [loadFamilies]);
 
-  // pricebooks + best price (seçili ürün & tab pricebooks ise)
   useEffect(() => {
     (async () => {
       if (!selected) return;
@@ -125,14 +134,11 @@ export default function ProductsPage() {
         setBestPrice(null);
         return;
       }
-
       try {
-        // kitaplar
         const bks = await listPriceBooks({ active: true });
         const list = bks.items ?? [];
         setBooks(list);
 
-        // seçili ürün için tüm entry’ler
         const all: PriceBookEntry[] = [];
         for (const b of list) {
           const es = await listPriceBookEntries(b.id, selected.id);
@@ -140,7 +146,6 @@ export default function ProductsPage() {
         }
         setBookEntries(all);
 
-        // Best price (bugün)
         try {
           const bp = await getBestPriceForProduct(selected.id);
           setBestPrice({
@@ -154,9 +159,7 @@ export default function ProductsPage() {
         } catch {
           setBestPrice(null);
         }
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     })();
   }, [selected, tab]);
 
@@ -168,10 +171,47 @@ export default function ProductsPage() {
     );
   }, [rows, q]);
 
+  const isDuplicateCode = useCallback((code: string, id?: number) => {
+    const c = (code || "").trim().toLowerCase();
+    if (!c) return false;
+    return rows.some((r) => r.code.toLowerCase() === c && r.id !== id);
+  }, [rows]);
+
+  function friendlyApiError(e: any): string {
+    const raw =
+      e?.detail ||
+      e?.message ||
+      e?.error ||
+      e?.response?.data?.detail ||
+      e?.response?.data?.error ||
+      e?.toString?.() ||
+      "Unknown error";
+
+    // sqlite unique constraint (backend returns 409)
+    const is409 =
+      (e?.status === 409) ||
+      (e?.response?.status === 409) ||
+      /UNIQUE constraint failed: products\.code/i.test(String(raw)) ||
+      /duplicate/i.test(String(raw)) ||
+      /already exists/i.test(String(raw));
+
+    if (is409) {
+      return "This product code already exists. Please choose a different code.";
+    }
+    return String(raw);
+  }
+
   async function save() {
     if (!editing) return;
+    setFormError(null);
 
-    const payload = {
+    const duplicate = isDuplicateCode(editing.code || "", editing.id as any);
+    if (duplicate) {
+      setFormError("This product code already exists. Please choose a different code.");
+      return;
+    }
+
+    const payload: any = {
       code: editing.code || "",
       name: editing.name || "",
       description: editing.description ?? null,
@@ -183,24 +223,26 @@ export default function ProductsPage() {
       is_active: editing.is_active ?? true,
       product_family_id:
         editing.product_family_id === undefined ? null : editing.product_family_id,
+      category_code: editing.category_code ?? "",
     };
 
-    if (editing.id) {
-      await apiPut(`/api/products/${editing.id}`, payload);
-    } else {
-      const created: any = await apiPost("/api/products", payload);
-      const newId = created?.id ?? created?.data?.id;
-      if (newId) {
-        setSelected({
-          id: newId,
-          ...payload,
-        } as any);
+    try {
+      if (editing.id) {
+        await apiPut(`/api/products/${editing.id}`, payload);
+      } else {
+        const created: any = await apiPost("/api/products", payload);
+        const newId = created?.id ?? created?.data?.id;
+        if (newId) {
+          setSelected({ id: newId, ...payload } as any);
+        }
       }
-    }
 
-    const res = await apiGet<any>("/api/products");
-    setRows(res.items ?? res ?? []);
-    setEditing(null);
+      const res = await apiGet<any>("/api/products");
+      setRows(res.items ?? res ?? []);
+      setEditing(null);
+    } catch (e: any) {
+      setFormError(friendlyApiError(e));
+    }
   }
 
   async function remove(p: Product) {
@@ -212,7 +254,20 @@ export default function ProductsPage() {
   }
 
   const familyName = (fid?: number | null) =>
-    fid ? families.find((f) => f.id === fid)?.name ?? `#${fid}` : "—";
+    fid ? families.find((f) => (f as any).id === fid)?.name ?? `#${fid}` : "—";
+
+  const categoryLabel = (code?: string | null) =>
+    code && ENGINE_CATEGORY_CODES.includes(code as EngineCategory)
+      ? `${code} — ${ENGINE_CATEGORY_LABEL[code as EngineCategory]}`
+      : code || "—";
+
+  const codeWarning =
+    editing?.code && isDuplicateCode(editing.code, editing.id as any)
+      ? "This code is already in use."
+      : "";
+
+  const saveDisabled =
+    !editing?.code || !editing?.name || !!codeWarning;
 
   return (
     <div className="grid grid-cols-12 gap-4">
@@ -227,11 +282,12 @@ export default function ProductsPage() {
           <div className="flex gap-2">
             <button
               className="px-3 py-1.5 border rounded"
-              onClick={() => setEditing({ currency: "USD", is_active: true })}
+              onClick={() =>
+                setEditing({ currency: "USD", is_active: true, category_code: "" })
+              }
             >
               + New
             </button>
-            {/* Define Prices CTA → Price Books */}
             <button
               className="px-3 py-1.5 border rounded"
               onClick={() => nav("/products/price-books")}
@@ -263,6 +319,9 @@ export default function ProductsPage() {
                 <div className="text-xs text-gray-500">
                   Family: {familyName(p.product_family_id)}
                 </div>
+                <div className="text-xs text-gray-500">
+                  Category: {p.category_code || "—"}
+                </div>
               </div>
             ))}
           </div>
@@ -279,21 +338,37 @@ export default function ProductsPage() {
             <h3 className="font-semibold">
               {editing.id ? "Edit Product" : "New Product"}
             </h3>
+
+            {formError && (
+              <div className="p-3 rounded bg-red-50 border border-red-200 text-red-700 text-sm">
+                {formError}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3 text-sm">
               <label className="flex flex-col">
                 <span>Code</span>
                 <input
-                  className="border rounded px-2 py-1"
+                  className={`border rounded px-2 py-1 ${codeWarning ? "border-red-400" : ""}`}
                   value={editing.code || ""}
-                  onChange={(e) => setEditing({ ...editing, code: e.target.value })}
+                  onChange={(e) => {
+                    setFormError(null);
+                    setEditing({ ...editing, code: e.target.value });
+                  }}
                 />
+                {codeWarning && (
+                  <span className="text-xs text-red-600 mt-1">{codeWarning}</span>
+                )}
               </label>
               <label className="flex flex-col">
                 <span>Name</span>
                 <input
                   className="border rounded px-2 py-1"
                   value={editing.name || ""}
-                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                  onChange={(e) => {
+                    setFormError(null);
+                    setEditing({ ...editing, name: e.target.value });
+                  }}
                 />
               </label>
 
@@ -345,33 +420,63 @@ export default function ProductsPage() {
                 />
               </label>
 
-              {/* Product Family (Tender categories) */}
               <label className="flex flex-col col-span-2">
                 <span>Product Family</span>
                 <select
                   className="border rounded px-2 py-1"
                   value={editing.product_family_id ?? ""}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    const val = e.target.value === "" ? null : Number(e.target.value);
+                    let nextCategory = editing.category_code ?? "";
+                    if (!nextCategory) {
+                      const f = families.find((x) => (x as any).id === val);
+                      const famCat = (f as any)?.family_category_code;
+                      if (famCat) nextCategory = "";
+                    }
                     setEditing({
                       ...editing,
-                      product_family_id:
-                        e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
+                      product_family_id: val,
+                      category_code: nextCategory,
+                    });
+                  }}
                 >
                   <option value="">— None —</option>
                   {families.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
+                    <option key={(f as any).id} value={(f as any).id}>
+                      {(f as any).name}
                     </option>
                   ))}
                 </select>
-                {/* helper hint if BE has no families yet */}
                 {families.length === 0 && (
                   <span className="mt-1 text-xs text-gray-500">
-                    No families found. Ensure Tender categories are seeded in the backend (e.g., “Ammonium Nitrate Emulsion”, “Bulk Emulsion”, “ANFO”, “Freight”, etc.).
+                    No families found. You can still save without one.
                   </span>
                 )}
+              </label>
+
+              {/* Engine Category Code (product override) */}
+              <label className="flex flex-col col-span-2">
+                <span>Engine Category Code</span>
+                <select
+                  className="border rounded px-2 py-1"
+                  value={editing.category_code ?? ""}
+                  onChange={(e) =>
+                    setEditing({
+                      ...editing,
+                      category_code: e.target.value, // "" => inherit
+                    })
+                  }
+                >
+                  <option value="">— Inherit from family —</option>
+                  {ENGINE_CATEGORY_CODES.map((code) => (
+                    <option key={code} value={code}>
+                      {code} — {ENGINE_CATEGORY_LABEL[code]}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 text-xs text-gray-500">
+                  Leave blank to inherit the product family’s category. Selecting a value sets a product-level override.
+                </span>
               </label>
 
               <label className="flex items-center gap-2">
@@ -398,12 +503,15 @@ export default function ProductsPage() {
               </label>
             </div>
             <div className="flex gap-2">
-              <button className="px-3 py-1.5 border rounded" onClick={save}>
+              <button className="px-3 py-1.5 border rounded disabled:opacity-50" onClick={save} disabled={saveDisabled}>
                 Save
               </button>
               <button
                 className="px-3 py-1.5 border rounded"
-                onClick={() => setEditing(null)}
+                onClick={() => {
+                  setFormError(null);
+                  setEditing(null);
+                }}
               >
                 Cancel
               </button>
@@ -416,7 +524,10 @@ export default function ProductsPage() {
               <div className="flex gap-2">
                 <button
                   className="px-3 py-1.5 border rounded"
-                  onClick={() => setEditing(selected!)}
+                  onClick={() => setEditing({ 
+                    ...selected!, 
+                    category_code: (selected as any).product_category_code ?? "" 
+                  })}
                 >
                   Edit
                 </button>
@@ -467,6 +578,20 @@ export default function ProductsPage() {
                   <span className="text-gray-500">Family:</span>{" "}
                   {familyName(selected?.product_family_id)}
                 </div>
+
+                <div className="col-span-2">
+                  <span className="text-gray-500">Category (resolved):</span>{" "}
+                  {categoryLabel(selected?.category_code)}
+                </div>
+                <div>
+                  <span className="text-gray-500">Product override:</span>{" "}
+                  {categoryLabel((selected as any)?.product_category_code)}
+                </div>
+                <div>
+                  <span className="text-gray-500">Family default:</span>{" "}
+                  {categoryLabel((selected as any)?.family_category_code)}
+                </div>
+
                 <div className="col-span-2">
                   <span className="text-gray-500">Description:</span>{" "}
                   {selected?.description || "-"}
@@ -476,7 +601,6 @@ export default function ProductsPage() {
 
             {tab === "pricebooks" && (
               <div className="mt-3 text-sm space-y-4">
-                {/* NEW: Best price (today) */}
                 <div className="p-3 rounded border bg-gray-50">
                   <div className="font-medium mb-1">Best price (today)</div>
                   {bestPrice ? (
@@ -498,7 +622,6 @@ export default function ProductsPage() {
                   )}
                 </div>
 
-                {/* Entries list */}
                 {bookEntries.length === 0 ? (
                   <div className="text-gray-500">
                     No price-book entries for this product.
@@ -521,7 +644,6 @@ export default function ProductsPage() {
 
             {tab === "audit" && (
               <div className="mt-3 text-sm text-gray-600">
-                {/* audit alanları backend’de yoksa boş geçiyoruz */}
                 Created: - · Updated: -
               </div>
             )}

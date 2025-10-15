@@ -21,6 +21,8 @@ import RiseAndFallTab from "../scenario/tabs/RiseAndFallTab";
 import RebatesTab from "../scenario/tabs/RebatesTab";
 // NEW: Summary (server-calculated)
 import SummaryTab from "../scenario/tabs/SummaryTab";
+// Embedded engine panel
+import RunEnginePage from "../../components/engine/RunEnginePage";
 
 /* ---------------- Types ---------------- */
 type ScenarioDetail = {
@@ -141,6 +143,8 @@ export default function ScenarioPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  // local UI state for embedded engine
+  const [showEngine, setShowEngine] = useState(false);
 
   // Global 401 listener (api.ts -> window.dispatchEvent("auth:unauthorized", ...))
   useEffect(() => {
@@ -363,11 +367,25 @@ export default function ScenarioPage() {
               {flow.next_stage ? ` → Next: ${flow.next_stage.toUpperCase().replace("_", " & ")}` : ""}
             </span>
           )}
+          <button
+            className="ml-3 px-3 py-1 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+            onClick={() => setShowEngine(v => !v)}
+            title="Open embedded engine panel"
+          >
+            {showEngine ? "Hide Engine" : "Run Engine"}
+          </button>
           <button onClick={loadAll} className="ml-3 px-3 py-1 rounded bg-gray-100 hover:bg-gray-200">
             Refresh
           </button>
         </div>
       </div>
+
+      {/* Embedded engine panel */}
+      {showEngine && id && (
+        <div className="rounded border p-4 bg-white mb-3">
+          <RunEnginePage scenarioId={id} />
+        </div>
+      )}
 
       {/* Global auth error */}
       {authError && (

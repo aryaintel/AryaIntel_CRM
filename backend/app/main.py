@@ -16,10 +16,12 @@ from .api.price_terms import router as price_terms_router
 from .api import cost_books_api
 from .api.services_catalog_api import router as services_catalog_router
 
+
 # Run Engine APIs
 from .api.run_engine_api import router as run_engine_router
 from .api.engine_facts_api import router as engine_facts_router     # FIX: use engine_facts_api
 from .api.boq_diagnostics_api import router as boq_diag_router      # NEW: BOQ diagnostics
+from app.api.engine_facts_api import router as engine_facts_router   # <-- EKLE
 
 # Core modules
 from .api import (
@@ -179,6 +181,8 @@ app.include_router(price_terms_router)
 app.include_router(run_engine_router)
 app.include_router(engine_facts_router)
 app.include_router(boq_diag_router)
+app.include_router(engine_facts_router)    
+
 
 # Other domain APIsd
 app.include_router(opex_router)

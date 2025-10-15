@@ -1,3 +1,4 @@
+
 // src/pages/products/ProductFamiliesPage.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { apiGet, apiPost, apiPut, apiDelete } from "../../lib/api";
@@ -11,15 +12,37 @@ import { apiGet, apiPost, apiPut, apiDelete } from "../../lib/api";
  *   - Fallbacks: /api/product_families, /api/products/families
  * Behavior:
  *   - List & search
- *   - Create / Edit (name, description, active)
+ *   - Create / Edit (name, description, active, engine category code)
  *   - Activate/Deactivate, Delete
  */
+
+// -----------------------------------------------------------------------------
+// Engine Category Codes (keep in sync with backend/app/models/engine_category.py)
+// -----------------------------------------------------------------------------
+const ENGINE_CATEGORY_CODES = ["AN", "EM", "IE", "Services"] as const;
+type EngineCategory = (typeof ENGINE_CATEGORY_CODES)[number];
+const ENGINE_CATEGORY_LABEL: Record<EngineCategory, string> = {
+  AN: "Ammonium Nitrate",
+  EM: "Emulsion",
+  IE: "Initiating Explosives",
+  Services: "Services",
+};
+function categoryLabel(code?: string | null) {
+  if (!code) return "—";
+  if ((ENGINE_CATEGORY_CODES as readonly string[]).includes(code)) {
+    // @ts-ignore
+    return `${code} — ${ENGINE_CATEGORY_LABEL[code as EngineCategory]}`;
+  }
+  return code;
+}
 
 type Family = {
   id?: number;
   name: string;
   description?: string | null;
   is_active: boolean;
+  // NEW: active engine-category mapping returned by backend
+  family_category_code?: string | null;
 };
 
 function unwrapList<T = any>(res: any): T[] {
@@ -54,7 +77,7 @@ export default function ProductFamiliesPage() {
 
   const [selected, setSelected] = useState<Family | null>(null);
   // IMPORTANT: allow partial while editing to avoid TS complaints when starting from null
-  const [editing, setEditing] = useState<Partial<Family> | null>(null);
+  const [editing, setEditing] = useState<Partial<Family> & { category_code?: string } | null>(null);
 
   // ---------- discovery + load ----------
   useEffect(() => {
@@ -88,6 +111,7 @@ export default function ProductFamiliesPage() {
       name: f.name ?? "",
       description: f.description ?? null,
       is_active: toBool(f.is_active ?? true),
+      family_category_code: f.family_category_code ?? f.category_code ?? null, // be tolerant
     }));
   }
 
@@ -95,6 +119,19 @@ export default function ProductFamiliesPage() {
     if (!baseUrl) return;
     const res = await apiGet(baseUrl);
     setRows(normalizeList(res));
+    // also refresh selected with latest mapping if it's still chosen
+    if (selected?.id) {
+      const latest = unwrapList<Family>(res).find((x: any) => x.id === selected.id);
+      if (latest) {
+        setSelected({
+          ...selected,
+          family_category_code: (latest as any).family_category_code ?? (latest as any).category_code ?? null,
+          name: (latest as any).name ?? selected.name,
+          description: (latest as any).description ?? selected.description,
+          is_active: toBool((latest as any).is_active ?? selected.is_active),
+        });
+      }
+    }
   }
 
   // ---------- derived ----------
@@ -124,12 +161,21 @@ export default function ProductFamiliesPage() {
         description: cleanDesc(editing.description),
         // ✅ send boolean; do NOT coerce other fields
         is_active: editing.is_active ?? true,
+        // NEW: engine category mapping (optional). "" clears mapping.
+        category_code: editing.category_code ?? "",
       };
       await apiPost(baseUrl, payload);
       await reload();
       setEditing(null);
     } catch (e: any) {
-      setErr(e?.message || String(e));
+      const msg = String(e?.message || e);
+      if (/409|unique|already exists|duplicate/i.test(msg)) {
+        setErr("Family name already exists. Please choose a different name.");
+      } else if (/422|Invalid engine category/i.test(msg)) {
+        setErr("Invalid engine category code.");
+      } else {
+        setErr(msg);
+      }
     } finally {
       setBusy(null);
     }
@@ -145,11 +191,20 @@ export default function ProductFamiliesPage() {
         description: cleanDesc(f.description),
         // ✅ boolean only
         is_active: !!f.is_active,
+        // NEW: engine category mapping (optional). "" clears mapping.
+        category_code: f.family_category_code ?? "",
       };
       await apiPut(`${baseUrl}/${f.id}`, payload);
       await reload();
     } catch (e: any) {
-      setErr(e?.message || String(e));
+      const msg = String(e?.message || e);
+      if (/409|unique|already exists|duplicate/i.test(msg)) {
+        setErr("Family name already exists. Please choose a different name.");
+      } else if (/422|Invalid engine category/i.test(msg)) {
+        setErr("Invalid engine category code.");
+      } else {
+        setErr(msg);
+      }
     } finally {
       setBusy(null);
     }
@@ -234,6 +289,32 @@ export default function ProductFamiliesPage() {
                   }
                 />
               </label>
+
+              {/* NEW: Engine Category Code */}
+              <label className="block text-xs text-gray-600">
+                Engine Category Code
+                <select
+                  className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                  value={editing?.category_code ?? ""}
+                  onChange={(e) =>
+                    setEditing((prev) => ({
+                      ...(prev ?? { is_active: true }),
+                      category_code: e.target.value, // "" => clear (inherit at product level)
+                    }))
+                  }
+                >
+                  <option value="">— Not set —</option>
+                  {ENGINE_CATEGORY_CODES.map((code) => (
+                    <option key={code} value={code}>
+                      {code} — {ENGINE_CATEGORY_LABEL[code]}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[11px] text-gray-500">
+                  If not set, products without an override won’t inherit a category until you choose one here later.
+                </div>
+              </label>
+
               <label className="inline-flex items-center gap-2 text-sm">
                 <input
                   type="checkbox"
@@ -292,7 +373,9 @@ export default function ProductFamiliesPage() {
                         <div className="flex items-center justify-between">
                           <div>
                             <div className="font-medium">{f.name}</div>
-                            <div className="text-xs text-gray-600">{f.is_active ? "Active" : "Inactive"}</div>
+                            <div className="text-xs text-gray-600">
+                              {f.is_active ? "Active" : "Inactive"} • Category: {categoryLabel(f.family_category_code)}
+                            </div>
                             {f.description ? (
                               <div className="text-xs text-gray-500 mt-1">{f.description}</div>
                             ) : null}
@@ -356,6 +439,8 @@ export default function ProductFamiliesPage() {
                       }
                     />
                   </label>
+
+                  {/* Active */}
                   <label className="block text-xs text-gray-600">
                     Active
                     <div className="mt-2">
@@ -371,6 +456,29 @@ export default function ProductFamiliesPage() {
                       </span>
                     </div>
                   </label>
+
+                  {/* NEW: Engine Category Code (family default) */}
+                  <label className="block text-xs text-gray-600 md:col-span-2">
+                    Engine Category Code
+                    <select
+                      className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
+                      value={selected.family_category_code ?? ""}
+                      onChange={(e) =>
+                        setSelected({ ...selected, family_category_code: e.target.value || null })
+                      }
+                    >
+                      <option value="">— Not set —</option>
+                      {ENGINE_CATEGORY_CODES.map((code) => (
+                        <option key={code} value={code}>
+                          {code} — {ENGINE_CATEGORY_LABEL[code]}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      Products without an explicit override will inherit this category.
+                    </div>
+                  </label>
+
                   <label className="block text-xs text-gray-600 md:col-span-2">
                     Description
                     <textarea

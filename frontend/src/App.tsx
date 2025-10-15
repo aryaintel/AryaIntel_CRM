@@ -51,7 +51,7 @@ import Health from "./pages/debug/Health";
 import BoqConsole from "./pages/BoqConsole";
 
 // NEW: Run Engine page
-import RunEnginePage from "./pages/engine/RunEnginePage";
+import RunEnginePage from "./components/engine/RunEnginePage";
 
 import { apiGet, ApiError } from "./lib/api";
 import { clearToken, getToken, AUTH_EVENT } from "./lib/auth";
