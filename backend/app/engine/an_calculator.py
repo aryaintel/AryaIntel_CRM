@@ -1,3 +1,4 @@
+# Path: backend/app/engine/an_calculator.py
 # C:/Dev/AryaIntel_CRM/backend/app/engine/an_calculator.py
 """
 AN Engine — R+F index-based monthly facts with Freight & Mgmt Fee split
@@ -43,6 +44,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from app.services.engine_persist import upsert_fact, Series
 
 
 # --------------------------- Small date helpers ---------------------------
@@ -397,61 +399,44 @@ def _has_series_column(db: Session) -> bool:
     colnames = { (c[1] if isinstance(c, (list, tuple)) else c["name"]) for c in cols }
     return "series" in { str(n) for n in colnames }
 
+
 def persist_an_facts(db: Session, run_id: int, scenario_id: int,
                      facts_m: List[FactRow], facts_q: List[FactRow], facts_a: List[FactRow]) -> None:
     """
-    Idempotent persist of AN facts for the given run/scenario.
-    Key (recommended schema): (run_id, sheet_code, category_code, yyyymm, series)
-    Falls back to raising a clear error if 'series' column is absent.
+    Idempotent persist of AN facts using series-aware upsert.
+    Requires 'series' column (migration 20251016).
+
+    - Writes/updates a single row per (run_id, sheet_code, category_code, yyyymm, series).
+    - Does NOT rely on created_at; DB default/trigger may populate it if present.
     """
     all_facts = facts_m + facts_q + facts_a
-    use_series = _has_series_column(db)
 
-    # Temp table for bulk insert (SQLite friendly)
-    db.execute(text("""
-        CREATE TEMP TABLE IF NOT EXISTS tmp_an_facts (
-            run_id INTEGER, scenario_id INTEGER, sheet_code TEXT, category_code TEXT,
-            yyyymm INTEGER, series TEXT, value NUMERIC
-        )
-    """))
-    db.execute(text("DELETE FROM tmp_an_facts"))
-
-    # Bulk insert into temp
-    for fr in all_facts:
-        db.execute(text("""
-            INSERT INTO tmp_an_facts (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value)
-            VALUES (:run_id, :scenario_id, :sheet_code, :category_code, :yyyymm, :series, :value)
-        """), {
-            "run_id": run_id,
-            "scenario_id": scenario_id,
-            "sheet_code": fr.sheet_code,
-            "category_code": fr.category_code,
-            "yyyymm": fr.yyyymm,
-            "series": fr.series,
-            "value": fr.value,
-        })
-
-    # Delete existing rows for this run/category (all AN sheets)
-    db.execute(text("""
-        DELETE FROM engine_facts_monthly
-         WHERE run_id=:run_id AND scenario_id=:sid AND category_code='AN'
-           AND sheet_code IN ('c.Sales-AN','oQ.Finance-AN','oA.Finance-AN')
-    """), {"run_id": run_id, "sid": scenario_id})
-
-    if not use_series:
-        # Schema without 'series' cannot hold multiple series per (month,sheet).
-        # Provide a deterministic, explicit error to guide migration.
+    # Schema guard
+    if not _has_series_column(db):
         raise RuntimeError(
-            "engine_facts_monthly lacks 'series' column. Please add 'series TEXT' to store "
-            "c.Sales-AN and Finance-AN multi-series facts. "
-            "Until then, persistence is blocked to avoid data ambiguity."
+            "engine_facts_monthly lacks 'series' column. Please run migration 20251016_add_series_to_engine_facts."
         )
 
-    # Insert from temp (schema with 'series')
-    db.execute(text("""
-        INSERT INTO engine_facts_monthly (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value, created_at)
-        SELECT :run_id, :sid, sheet_code, category_code, yyyymm, series, value, CURRENT_TIMESTAMP
-        FROM tmp_an_facts
-    """), {"run_id": run_id, "sid": scenario_id})
+    bind = db.get_bind()
+    if bind is None:
+        # Fallback: use session connection
+        bind = db.connection().engine
 
-    db.commit()
+    with bind.begin() as cx:
+        for fr in all_facts:
+            # Normalize and validate
+            sheet_code = str(fr["sheet_code"])
+            category_code = str(fr["category_code"])
+            yyyymm = str(fr["yyyymm"])
+            series = str(fr["series"])
+            value = fr["value"]
+            upsert_fact(
+                cx,
+                scenario_id=scenario_id,
+                run_id=run_id,
+                sheet_code=sheet_code,
+                category_code=category_code,
+                yyyymm=yyyymm,
+                series=series,
+                value=value,
+            )

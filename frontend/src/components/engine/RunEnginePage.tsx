@@ -1,18 +1,29 @@
-import React, { useMemo, useState, type ReactNode } from "react";
-import {
-  runEngine,
-  DEFAULT_OPTIONS,
-  checkBoqCoverage,
-  format1,
-} from "../../api/engine";
-import EngineFactsGrid from "./EngineFactsGrid";
-import { useEngineFacts } from "./useEngineFacts";
+// frontend/src/components/engine/RunEnginePage.tsx
+import React, { useEffect, useMemo, useState, type ReactNode } from "react";
+import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, format1 } from "../../api/engine";
 
-export const CATS = ["AN", "EM", "IE", "Services"] as const;
-export type EngineCategoryCode = typeof CATS[number];
+/**
+ * Run Engine — All-in-One (Single File)
+ * ----------------------------------------------------------------
+ * • Üst   : Kategori & Opsiyonlar + Run / Persist / Coverage (sticky)
+ * • Orta  : Excel paralelli P&L Pivot (Monthly / Quarterly / Annual)
+ * • Alt   : Persisted Facts (oA.Finance-*) — series pivot
+ *
+ * Bu dosya, önceki EngineFinancePivot / EngineFactsGrid / EngineResultsTabs
+ * komponentlerinin yerini alır. (Tek-UI yaklaşımı)
+ */
+
+// ==== Türler & Yardımcılar ===================================================
+const CATS = ["AN", "EM", "IE", "Services"] as const;          // <- export kaldırıldı (Vite HMR uyarısı çözümü)
+type EngineCategoryCode = typeof CATS[number];
 
 type EngineCategory = { code: EngineCategoryCode; enabled: boolean };
-type EngineRunRequest = { categories: EngineCategory[]; options: any; persist: boolean; include_facts?: boolean };
+type EngineRunRequest = {
+  categories: EngineCategory[];
+  options: any;
+  persist: boolean;
+  include_facts?: boolean;
+};
 type EngineRunResult = {
   scenario_id: number;
   run_id?: number | null;
@@ -20,7 +31,7 @@ type EngineRunResult = {
   notes?: string | null;
   persisted?: boolean;
   persisted_rows?: number;
-  generated: { name: string; months: string[]; values: number[] }[];
+  generated?: { name: string; months: string[]; values: number[] }[];
 };
 
 type Props = {
@@ -30,6 +41,22 @@ type Props = {
 };
 
 type CatState = Record<EngineCategoryCode, boolean>;
+type Mode = "month" | "quarter" | "year";
+type SeriesKey = "revenue" | "cogs" | "gp";
+type CategoryKey = "AN" | "Services";
+
+type FactRow = {
+  yyyymm: string;        // "YYYY-MM"
+  series: SeriesKey;     // revenue | cogs | gp
+  value: number;
+  sheet_code: string;    // c.Sales-AN, oA.Finance-Services, ...
+};
+
+const SHEET_BY_MODE: Record<Mode, { AN: string; Services: string }> = {
+  month:   { AN: "c.Sales-AN",       Services: "c.Sales-Services" },
+  quarter: { AN: "oQ.Finance-AN",    Services: "oQ.Finance-Services" },
+  year:    { AN: "oA.Finance-AN",    Services: "oA.Finance-Services" },
+};
 
 function buildRequest(selected: CatState, opts: any, persist: boolean): EngineRunRequest {
   const categories: EngineCategory[] = (CATS as readonly EngineCategoryCode[]).map((c) => ({
@@ -39,10 +66,6 @@ function buildRequest(selected: CatState, opts: any, persist: boolean): EngineRu
   return { categories, options: opts, persist, include_facts: true };
 }
 
-const Label = ({ htmlFor, children }: { htmlFor?: string; children?: ReactNode }) => (
-  <label htmlFor={htmlFor} className="text-sm font-medium text-gray-700">{children}</label>
-);
-
 const Box = ({ title, children }: { title: string; children?: ReactNode }) => (
   <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
     <div className="px-4 py-3 border-b text-sm font-semibold">{title}</div>
@@ -50,18 +73,26 @@ const Box = ({ title, children }: { title: string; children?: ReactNode }) => (
   </div>
 );
 
-function EngineOptionToggle(props: {
-  id?: string;
+const Label = ({ htmlFor, children }: { htmlFor?: string; children?: ReactNode }) => (
+  <label htmlFor={htmlFor} className="text-sm font-medium text-gray-700">
+    {children}
+  </label>
+);
+
+function Toggle({
+  checked,
+  disabled,
+  onChange,
+  children,
+}: {
   checked: boolean;
   disabled?: boolean;
   onChange: (v: boolean) => void;
-  children?: ReactNode;
+  children: ReactNode;
 }) {
-  const { id, checked, disabled, onChange, children } = props;
   return (
     <label className="flex items-center gap-2 cursor-pointer">
       <input
-        id={id}
         type="checkbox"
         className="h-4 w-4"
         checked={checked}
@@ -73,74 +104,58 @@ function EngineOptionToggle(props: {
   );
 }
 
-function MiniTable({ name, months, values }: { name: string; months: string[]; values: number[] }) {
-  return (
-    <div className="mb-6">
-      <div className="font-semibold text-sm mb-2">{name}</div>
-      <div className="overflow-auto">
-        <table className="min-w-[720px] text-xs border border-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              {months.map((m, i) => (
-                <th key={i} className="px-2 py-1 border-b border-r">{m}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              {values.map((v, i) => (
-                <td key={i} className="px-2 py-1 border-b border-r text-right">{format1 ? format1(v) : v.toFixed(1)}</td>
-              ))}
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
+function fmtHeader(mode: Mode, yyyymm: string) {
+  if (mode === "month") return yyyymm;
+  const [y, m] = yyyymm.split("-").map((x) => parseInt(x, 10));
+  if (mode === "quarter") return `${y}-Q${Math.ceil(m / 3)}`;
+  return String(y);
+}
+function fmt(n?: number) {
+  if (n === undefined || n === null) return "—";
+  try { return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(n); }
+  catch { return String(n); }
 }
 
-function SectionDivider({ title }: { title: string }) {
-  return <div className="text-xs uppercase tracking-wider text-gray-500 font-semibold mt-6 mb-2">{title}</div>;
-}
-
-export default function RunEnginePage({ scenarioId: scenarioIdProp, defaultCategories, className }: Props) {
+// ==== Sayfa ==================================================================
+export default function RunEnginePage({
+  scenarioId: scenarioIdProp,
+  defaultCategories,
+  className,
+}: Props) {
   const [scenarioIdLocal, setScenarioIdLocal] = useState<number>(scenarioIdProp ?? 1);
   const scenarioId = scenarioIdProp ?? scenarioIdLocal;
 
+  // Seçimler
   const [cats, setCats] = useState<CatState>({
     AN: defaultCategories?.AN ?? true,
     EM: defaultCategories?.EM ?? false,
     IE: defaultCategories?.IE ?? false,
-    Services: defaultCategories?.Services ?? true
+    Services: defaultCategories?.Services ?? true,
   });
   const [opts, setOpts] = useState<any>(DEFAULT_OPTIONS);
-  const [busy, setBusy] = useState<boolean>(false);
+
+  // Çalıştırma durumu
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EngineRunResult | null>(null);
-  const [showResults, setShowResults] = useState<boolean>(true);
-  const [showFacts, setShowFacts] = useState<boolean>(true);
 
-  const AN_SHEETS = ["oA.Finance-AN.Revenue","oA.Finance-AN.COGS","oA.Finance-AN.GP"];
-  const SV_SHEETS = ["oA.Finance-Services.Revenue","oA.Finance-Services.COGS","oA.Finance-Services.GP"];
+  // P&L görünümü
+  const [mode, setMode] = useState<Mode>("month");
+  const [seriesSel, setSeriesSel] = useState<SeriesKey[]>(["revenue", "cogs", "gp"]);
+  const [catsSel, setCatsSel] = useState<CategoryKey[]>(["AN", "Services"]);
 
-  const [coverage, setCoverage] = useState<{ AN: string[]; EM: string[]; IE: string[] }>({
-    AN: [], EM: [], IE: []
-  });
+  // BOQ coverage kısa notlar
+  const [coverage, setCoverage] = useState<{ AN: string[]; EM: string[]; IE: string[] }>({ AN: [], EM: [], IE: [] });
 
-  const selectedList = useMemo(
-    () => (CATS as readonly EngineCategoryCode[]).filter((c) => cats[c]),
-    [cats]
-  );
-
-  const run = async (doPersist: boolean) => {
-    setBusy(true); setError(null);
+  // ---------- RUN & COVERAGE ----------
+  const run = async (persist: boolean) => {
+    setBusy(true);
+    setError(null);
     try {
-      const body = buildRequest(cats, opts, doPersist);
-      const data: any = await runEngine(scenarioId, body as any);
-      setOpts((o: any) => ({ ...o, rise_and_fall: data?.locks?.rise_and_fall ? true : o.rise_and_fall }));
+      const body = buildRequest(cats, opts, persist);
+      const data = await runEngine(scenarioId, body as any);
+      setOpts((o: any) => ({ ...o, rise_and_fall: (data as any)?.locks?.rise_and_fall ? true : o.rise_and_fall }));
       setResult(data as EngineRunResult);
-      setShowResults(true);
-      setShowFacts(true);
     } catch (e: any) {
       setError(e?.message || "Run failed");
     } finally {
@@ -149,7 +164,7 @@ export default function RunEnginePage({ scenarioId: scenarioIdProp, defaultCateg
   };
 
   const checkCoverage = async () => {
-    const sections = (["AN","EM","IE"] as const).filter((c) => cats[c]);
+    const sections = (["AN", "EM", "IE"] as const).filter((c) => cats[c]);
     const notes: { AN: string[]; EM: string[]; IE: string[] } = { AN: [], EM: [], IE: [] };
     for (const s of sections) {
       try {
@@ -162,125 +177,346 @@ export default function RunEnginePage({ scenarioId: scenarioIdProp, defaultCateg
     setCoverage(notes);
   };
 
+  // ---------- Pivot veri (API: /api/engine/facts + category) ----------
+// ✅ DOĞRU PARAM İSİMLERİYLE GÜNCELLENMİŞ SÜRÜM
+async function fetchFacts(opts: {
+  scenarioId: number;
+  sheet: string;                 // "oA.Finance-AN" vb.
+  series: ("revenue" | "cogs" | "gp")[];
+  category: "AN" | "Services";
+}) {
+  const qs = new URLSearchParams();
+  qs.set("scenario_id", String(opts.scenarioId));
+
+  // Eski/yeni backend varyasyonlarını desteklemek için ikisini birden gönderiyoruz:
+  qs.set("sheet_code", opts.sheet);
+  qs.set("sheet", opts.sheet);
+
+  qs.set("category_code", opts.category);
+  qs.set("category", opts.category);
+
+  qs.set("series", opts.series.join(","));
+  qs.set("group_by", "series");
+
+  const res = await fetch(`/api/engine/facts?${qs.toString()}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+
+  // ---------- AN & Services Pivot State ----------
+  const [rowsAN, setRowsAN] = useState<FactRow[]>([]);
+  const [rowsSVC, setRowsSVC] = useState<FactRow[]>([]);
+  const [loadingPivot, setLoadingPivot] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoadingPivot(true);
+      try {
+        const sheetAN = SHEET_BY_MODE[mode].AN;
+        const sheetSV = SHEET_BY_MODE[mode].Services;
+        const [a, s] = await Promise.all([
+          fetchFacts({ scenarioId, sheet: sheetAN, series: seriesSel, category: "AN" }),
+          fetchFacts({ scenarioId, sheet: sheetSV, series: seriesSel, category: "Services" }),
+        ]);
+        if (mounted) {
+          setRowsAN(a);
+          setRowsSVC(s);
+        }
+      } catch {
+        if (mounted) { setRowsAN([]); setRowsSVC([]); }
+      } finally {
+        if (mounted) setLoadingPivot(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, [scenarioId, mode, seriesSel]);
+
+  // ---------- Persisted Facts (oA.Finance-*) ----------
+  const [persisted, setPersisted] = useState<Record<string, FactRow[]>>({});
+  const [loadingPersisted, setLoadingPersisted] = useState(false);
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoadingPersisted(true);
+      const out: Record<string, FactRow[]> = {};
+      try {
+        for (const entry of [
+          { sheet: "oA.Finance-AN", category: "AN" as const },
+          { sheet: "oA.Finance-Services", category: "Services" as const },
+        ]) {
+          out[entry.sheet] = await fetchFacts({
+            scenarioId,
+            sheet: entry.sheet,
+            series: ["revenue", "cogs", "gp"],
+            category: entry.category,
+          });
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (mounted) { setPersisted(out); setLoadingPersisted(false); }
+      }
+    })();
+    return () => { mounted = false; };
+  }, [scenarioId]);
+
+  // ---------- Ortak grid üretimi ----------
+  function buildHeaders(rows: FactRow[]) {
+    return Array.from(new Set(rows.map((r) => r.yyyymm))).sort((a, b) => a.localeCompare(b));
+  }
+  function buildIndex(rows: FactRow[]) {
+    return rows.reduce((acc, r) => {
+      (acc[r.series] = acc[r.series] || {})[r.yyyymm] = r.value;
+      return acc;
+    }, {} as Record<SeriesKey, Record<string, number>>);
+  }
+
+  const headersAN  = useMemo(() => buildHeaders(rowsAN),  [rowsAN]);
+  const headersSVC = useMemo(() => buildHeaders(rowsSVC), [rowsSVC]);
+  const idxAN      = useMemo(() => buildIndex(rowsAN),   [rowsAN]);
+  const idxSVC     = useMemo(() => buildIndex(rowsSVC),  [rowsSVC]);
+
+  // ============================ RENDER =======================================
   return (
     <div className={className ?? ""}>
-      <Box title="Run Engine">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {!scenarioIdProp && (
-            <div>
-              <Label htmlFor="scenarioId">Scenario ID</Label>
-              <input
-                id="scenarioId"
-                type="number"
-                className="mt-1 w-full rounded-md border px-3 py-2"
-                value={scenarioIdLocal}
-                min={1}
-                onChange={(e) => setScenarioIdLocal(parseInt(e.target.value || "1", 10))}
-              />
+
+      {/* ÜST KONTROLLER — sticky (tablolar aşağıda kalır) */}
+      <div className="sticky top-0 z-10 bg-gray-50/80 backdrop-blur border-b">
+        <Box title="Run Engine">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {!scenarioIdProp && (
+              <div>
+                <Label htmlFor="scenarioId">Scenario ID</Label>
+                <input
+                  id="scenarioId"
+                  type="number"
+                  className="mt-1 w-full rounded-md border px-3 py-2"
+                  value={scenarioIdLocal}
+                  min={1}
+                  onChange={(e) => setScenarioIdLocal(parseInt(e.target.value || "1", 10))}
+                />
+              </div>
+            )}
+            <div className={!scenarioIdProp ? "col-span-2 grid grid-cols-2 gap-2" : "grid grid-cols-2 gap-2"}>
+              {CATS.map((c) => (
+                <Toggle key={c} checked={cats[c]} onChange={(v) => setCats((s) => ({ ...s, [c]: v }))}>
+                  {c}
+                </Toggle>
+              ))}
             </div>
-          )}
-          <div className={!scenarioIdProp ? "col-span-2 grid grid-cols-2 gap-2" : "grid grid-cols-2 gap-2"}>
-            {(CATS as readonly EngineCategoryCode[]).map((c) => (
-              <EngineOptionToggle key={c} checked={cats[c]} onChange={(v) => setCats((s) => ({ ...s, [c]: v }))}>
-                {c}
-              </EngineOptionToggle>
-            ))}
           </div>
+
+          <div className="mt-3 grid grid-cols-2 md:grid-cols-6 gap-3">
+            <Toggle checked={!!opts.rise_and_fall} disabled={!!result?.locks?.rise_and_fall}
+                    onChange={(v) => setOpts((s: any) => ({ ...s, rise_and_fall: v }))}>
+              Rise &amp; Fall {result?.locks?.rise_and_fall ? "(locked)" : ""}
+            </Toggle>
+            <Toggle checked={!!opts.fx_apply}      onChange={(v) => setOpts((s: any) => ({ ...s, fx_apply: v }))}>FX Apply</Toggle>
+            <Toggle checked={!!opts.tax_apply}     onChange={(v) => setOpts((s: any) => ({ ...s, tax_apply: v }))}>Tax Apply</Toggle>
+            <Toggle checked={!!opts.rebates_apply} onChange={(v) => setOpts((s: any) => ({ ...s, rebates_apply: v }))}>Rebates Apply</Toggle>
+            <Toggle checked={!!opts.twc_apply}     onChange={(v) => setOpts((s: any) => ({ ...s, twc_apply: v }))}>TWC Apply</Toggle>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 mt-4">
+            <button className="rounded-md bg-blue-600 text-white px-4 py-2 disabled:opacity-50"
+                    onClick={() => run(false)} disabled={busy}>
+              {busy ? "Running..." : "Preview"}
+            </button>
+            <button className="rounded-md bg-emerald-600 text-white px-4 py-2 disabled:opacity-50"
+                    onClick={() => run(true)} disabled={busy}>
+              {busy ? "Persisting..." : "Run & Persist"}
+            </button>
+            <button className="rounded-md bg-gray-100 text-gray-800 px-3 py-2 border"
+                    onClick={checkCoverage} disabled={busy}>
+              Check BOQ Coverage
+            </button>
+
+            {result && (
+              <span className="ml-auto text-xs text-gray-600">
+                Persisted: <b>{result.persisted ? "yes" : "no"}</b> • Rows: <b>{result.persisted_rows ?? 0}</b>
+                {result.notes ? ` • ${result.notes}` : ""}
+              </span>
+            )}
+          </div>
+
+          {error && <div className="mt-2 text-sm text-red-600">{error}</div>}
+        </Box>
+      </div>
+
+      {/* P&L PIVOT (AN & Services) */}
+      <Box title="Finance – P&L View (Monthly / Quarterly / Annual)">
+        <div className="flex flex-wrap items-center gap-3 mb-3">
+          <div className="inline-flex rounded-md border border-gray-300 overflow-hidden">
+            {(["month","quarter","year"] as Mode[]).map((m, i) => {
+              const active = mode === m;
+              return (
+                <button key={m} onClick={() => setMode(m)}
+                  className={"px-3 py-1 text-sm " + (active ? "bg-gray-900 text-white" : "bg-white text-gray-700 hover:bg-gray-50")
+                    + (i>0 ? " border-l border-gray-300" : "")}>
+                  {m==="month"?"Monthly":m==="quarter"?"Quarterly":"Annual"}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2">
+            {(["revenue","cogs","gp"] as SeriesKey[]).map((s) => {
+              const on = seriesSel.includes(s);
+              return (
+                <button key={s}
+                  onClick={() =>
+                    setSeriesSel((prev) => prev.includes(s) ? prev.filter((x)=>x!==s) : [...prev, s])}
+                  className={"px-2 py-1 text-xs rounded border " + (on ? "bg-indigo-600 text-white border-indigo-600" :
+                    "bg-white text-gray-700 border-gray-300 hover:bg-gray-50")}>
+                  {s.toUpperCase()}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2">
+            {(["AN","Services"] as CategoryKey[]).map((c) => {
+              const on = catsSel.includes(c);
+              return (
+                <button key={c}
+                  onClick={() => setCatsSel((prev)=> prev.includes(c)? prev.filter((x)=>x!==c):[...prev,c])}
+                  className={"px-2 py-1 text-xs rounded border " + (on ? "bg-emerald-700 text-white border-emerald-700" :
+                    "bg-white text-gray-700 border-gray-300 hover:bg-gray-50")}>
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+          {loadingPivot && <span className="text-xs text-gray-500">Loading…</span>}
         </div>
 
-        <SectionDivider title="Options" />
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-          <EngineOptionToggle
-            checked={!!opts.rise_and_fall}
-            disabled={!!result?.locks?.rise_and_fall}
-            onChange={(v) => setOpts((s: any) => ({ ...s, rise_and_fall: v }))}
-          >
-            Rise &amp; Fall {result?.locks?.rise_and_fall ? "(locked)" : ""}
-          </EngineOptionToggle>
-          <EngineOptionToggle checked={!!opts.fx_apply} onChange={(v) => setOpts((s: any) => ({ ...s, fx_apply: v }))}>
-            FX Apply
-          </EngineOptionToggle>
-          <EngineOptionToggle checked={!!opts.tax_apply} onChange={(v) => setOpts((s: any) => ({ ...s, tax_apply: v }))}>
-            Tax Apply
-          </EngineOptionToggle>
-          <EngineOptionToggle checked={!!opts.rebates_apply} onChange={(v) => setOpts((s: any) => ({ ...s, rebates_apply: v }))}>
-            Rebates Apply
-          </EngineOptionToggle>
-          <EngineOptionToggle checked={!!opts.twc_apply} onChange={(v) => setOpts((s: any) => ({ ...s, twc_apply: v }))}>
-            TWC Apply
-          </EngineOptionToggle>
-          <EngineOptionToggle checked={showFacts} onChange={setShowFacts}>
-            Show Finance Facts
-          </EngineOptionToggle>
-        </div>
+        {/* AN */}
+        {catsSel.includes("AN") && (
+          <div className="rounded border bg-white mb-6">
+            <div className="px-3 py-2 border-b font-medium text-gray-800">
+              AN (Finance) • {SHEET_BY_MODE[mode].AN}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-[1200px] w-full text-xs">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-3 py-2 w-48">Series</th>
+                    {headersAN.map((h) => (
+                      <th key={h} className="text-right px-2 py-2 whitespace-nowrap">
+                        {fmtHeader(mode, h)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(["revenue","cogs","gp"] as SeriesKey[])
+                    .filter((s)=>seriesSel.includes(s))
+                    .map((s)=>(
+                      <tr key={s} className="odd:bg-white even:bg-gray-50">
+                        <td className="px-3 py-1 font-semibold capitalize">{s}</td>
+                        {headersAN.map((h)=>(
+                          <td key={h} className="text-right px-2 py-1 tabular-nums">
+                            {fmt(idxAN[s]?.[h])}
+                          </td>
+                        ))}
+                      </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
-        <div className="flex flex-wrap items-center gap-3 mt-4">
-          <button
-            className="rounded-md bg-blue-600 text-white px-4 py-2 disabled:opacity-50"
-            onClick={() => run(false)}
-            disabled={busy}
-          >
-            {busy ? "Running..." : "Preview"}
-          </button>
-          <button
-            className="rounded-md bg-gray-100 text-gray-800 px-3 py-2 border"
-            onClick={() => setShowResults((v) => !v)}
-            title={showResults ? "Hide results" : "Show results"}
-          >
-            {showResults ? "Hide" : "Show"}
-          </button>
-          <button
-            className="rounded-md bg-emerald-600 text-white px-4 py-2 disabled:opacity-50"
-            onClick={() => run(true)}
-            disabled={busy}
-          >
-            {busy ? "Persisting..." : "Run & Persist"}
-          </button>
-          <button
-            className="rounded-md bg-gray-100 text-gray-800 px-3 py-2 border"
-            onClick={checkCoverage}
-            disabled={busy}
-            title="Check BOQ coverage for selected AN/EM/IE"
-          >
-            Check BOQ Coverage
-          </button>
-        </div>
-
-        {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
+        {/* Services */}
+        {catsSel.includes("Services") && (
+          <div className="rounded border bg-white">
+            <div className="px-3 py-2 border-b font-medium text-gray-800">
+              Services (Finance) • {SHEET_BY_MODE[mode].Services}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-[1200px] w-full text-xs">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-3 py-2 w-48">Series</th>
+                    {headersSVC.map((h) => (
+                      <th key={h} className="text-right px-2 py-2 whitespace-nowrap">
+                        {fmtHeader(mode, h)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(["revenue","cogs","gp"] as SeriesKey[])
+                    .filter((s)=>seriesSel.includes(s))
+                    .map((s)=>(
+                      <tr key={s} className="odd:bg-white even:bg-gray-50">
+                        <td className="px-3 py-1 font-semibold capitalize">{s}</td>
+                        {headersSVC.map((h)=>(
+                          <td key={h} className="text-right px-2 py-1 tabular-nums">
+                            {fmt(idxSVC[s]?.[h])}
+                          </td>
+                        ))}
+                      </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </Box>
 
-      {!!selectedList.length && (
-        <Box title="Selected Categories">
-          <div className="flex flex-wrap gap-2 text-sm">
-            {selectedList.map((c) => (
-              <span key={c} className="px-2 py-1 rounded bg-gray-100 border">{c}</span>
-            ))}
-          </div>
-        </Box>
-      )}
+      {/* Persisted */}
+      <Box title="Finance Facts (persisted)">
+        {loadingPersisted && <div className="text-xs text-gray-500">Loading…</div>}
+        {!loadingPersisted && (
+          <div className="space-y-6">
+            {Object.entries(persisted).map(([sheet, rows]) => {
+              const headers = Array.from(new Set(rows.map((r) => r.yyyymm))).sort((a, b) => a.localeCompare(b));
+              const idx = rows.reduce((acc, r) => {
+                (acc[r.series] = acc[r.series] || {})[r.yyyymm] = r.value;
+                return acc;
+              }, {} as Record<SeriesKey, Record<string, number>>);
 
-      {showResults && result && (
-        <Box title={`Result • Scenario ${result.scenario_id}${result.run_id ? ` • Run #${result.run_id}` : ""}`}>
-          {result.notes && <div className="mb-2 text-xs text-amber-700">{result.notes}</div>}
-          <div className="mb-4 text-xs text-gray-600">
-            Persisted: <b>{result.persisted ? "yes" : "no"}</b> • Rows: <b>{result.persisted_rows}</b>
+              return (
+                <div key={sheet}>
+                  <div className="font-semibold text-gray-800 mb-1">{sheet}</div>
+                  <div className="overflow-x-auto rounded border bg-white">
+                    <table className="min-w-[1200px] w-full text-xs">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left px-3 py-2 w-48">Series</th>
+                          {headers.map((h) => (
+                            <th key={h} className="text-right px-2 py-2">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(["revenue","cogs","gp"] as SeriesKey[]).map((s)=>(
+                          <tr key={s} className="odd:bg-white even:bg-gray-50">
+                            <td className="px-3 py-1 font-semibold uppercase">{s}</td>
+                            {headers.map((h)=>(
+                              <td key={h} className="text-right px-2 py-1 tabular-nums">
+                                {fmt(idx[s]?.[h])}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <div>
-            {result.generated.map((s, i) => (
-              <MiniTable key={i} name={s.name} months={s.months} values={s.values} />
-            ))}
-          </div>
-          <details className="mt-2">
-            <summary className="cursor-pointer text-sm">Raw JSON</summary>
-            <pre className="text-xs overflow-auto bg-gray-50 p-3 border rounded">{JSON.stringify(result, null, 2)}</pre>
-          </details>
-        </Box>
-      )}
+        )}
+      </Box>
 
-      {showFacts && (
-        <Box title="Finance Facts (persisted)">
-          <EngineFactsGrid scenarioId={scenarioId} category="AN" sheets={AN_SHEETS} />
-          <EngineFactsGrid scenarioId={scenarioId} category="Services" sheets={SV_SHEETS} className="mt-6" />
+      {(coverage.AN.length || coverage.EM.length || coverage.IE.length) && (
+        <Box title="BOQ Coverage Notes">
+          <pre className="text-xs overflow-auto bg-gray-50 p-3 border rounded">
+            {JSON.stringify(coverage, null, 2)}
+          </pre>
         </Box>
       )}
     </div>
