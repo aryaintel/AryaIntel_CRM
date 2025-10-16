@@ -21,6 +21,7 @@ def _rows_to_dict(rows) -> List[Dict]:
             "category_code": r["category_code"],
             "yyyymm": int(r["yyyymm"]),
             "value": float(r["value"]),
+            "series": r["series"] if "series" in r.keys() else None,
         }
         for r in rows
     ]
@@ -42,6 +43,7 @@ def get_engine_facts(
     scenario_id: int = Query(..., description="Scenario ID"),
     sheet: Optional[str] = Query(None, description="Exact sheet code (e.g., oA.Finance-AN.Revenue)"),
     category: Optional[str] = Query(None, description="Category code (e.g., AN) — optional redundancy"),
+    series: Optional[str] = Query(None, description="Series name (e.g., revenue, cogs, gp)"),
     run_id: Optional[int] = Query(None, description="Specific run id; if omitted and latest=true, latest run is used"),
     latest: bool = Query(False, description="If true and run_id not provided, pick MAX(run_id) for the filter scope"),
     yyyymm_from: Optional[int] = Query(None, description="Lower bound for yyyymm (inclusive)"),
@@ -67,6 +69,8 @@ def get_engine_facts(
             wh.append("sheet_code=?"); args.append(sheet)
         if category:
             wh.append("category_code=?"); args.append(category)
+        if series:
+            wh.append("series=?"); args.append(series)
         if effective_run_id is not None:
             wh.append("run_id=?"); args.append(effective_run_id)
         if yyyymm_from is not None:
@@ -75,10 +79,10 @@ def get_engine_facts(
             wh.append("yyyymm<=?"); args.append(yyyymm_to)
 
         sql = f"""
-            SELECT run_id, scenario_id, sheet_code, category_code, yyyymm, value
+            SELECT run_id, scenario_id, sheet_code, category_code, yyyymm, value, series
             FROM engine_facts_monthly
             WHERE {' AND '.join(wh)}
-            ORDER BY sheet_code, yyyymm
+            ORDER BY sheet_code, yyyymm, series
             LIMIT ? OFFSET ?
         """
         args.extend([limit, offset])
@@ -87,6 +91,7 @@ def get_engine_facts(
             "scenario_id": scenario_id,
             "sheet": sheet,
             "category": category,
+            "series": series,
             "run_id": effective_run_id,
             "count": len(rows),
             "rows": _rows_to_dict(rows),
