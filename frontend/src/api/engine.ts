@@ -1,113 +1,109 @@
-// relative path: frontend/src/api/engine.ts
-// Path: frontend/src/api/engine.ts
-// Single-point Engine API (uses central api.ts for base URL & credentials)
+// Pathway: frontend/src/api/engine.ts
+import { apiGet, apiPost } from "../lib/api";
 
-import { apiGet, apiPost, ApiError } from "../lib/api";
+/* ------------------------------------------------------------------ */
+/* Types                                                              */
+/* ------------------------------------------------------------------ */
+export type EngineSeries = "revenue" | "cogs" | "gp";
 
-export const DEFAULT_OPTIONS = {
-  rise_and_fall: true,
-  fx_apply: true,
-  tax_apply: true,
-  rebates_apply: true,
-  twc_apply: true,
-} as const;
+export type GetFactsOpts = {
+  scenarioId: number;
+  /** c.Sales-AN, oA.Finance-AN, oQ.Finance-AN, ... */
+  sheet?: string;
+  /** Tek bir değer veya dizi; dizi gelirse virgülle birleştirilir */
+  series?: EngineSeries | EngineSeries[];
+  /** YYYYMM (örn. 202501) aralığı opsiyoneldir */
+  yyyymmFrom?: string;
+  yyyymmTo?: string;
+  /** true → persisted (oA/oQ), false/undefined → preview (c.Sales) */
+  persisted?: boolean;
+  /** sayfalama opsiyonel */
+  page?: number;
+  pageSize?: number;
+};
 
-export function format1(v: number) {
-  if (v === null || v === undefined || Number.isNaN(v)) return "-";
-  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(v);
+export type EngineFactRow = {
+  yyyymm: string;
+  /** örn. 'revenue' | 'cogs' | 'gp' */
+  series: EngineSeries;
+  /** kategori/sheet bağı (örn. AN) varsa BE zaten taşır */
+  [key: string]: any;
+};
+
+type EngineFactsResponse = {
+  rows: EngineFactRow[];
+};
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
+const SERIES_ORDER: EngineSeries[] = ["revenue", "cogs", "gp"];
+
+function normalizeSeries(input?: EngineSeries | EngineSeries[]): string | undefined {
+  if (!input) return undefined;
+  const arr = Array.isArray(input) ? input : [input];
+  // uniq + belirli sırada (BE tarafındaki tablo yazımıyla tutarlı olsun)
+  const uniq = Array.from(new Set(arr)).filter(Boolean) as EngineSeries[];
+  const ordered = SERIES_ORDER.filter((s) => uniq.includes(s));
+  return ordered.length ? ordered.join(",") : undefined;
 }
 
-/** Resilient engine run.
- * Tries canonical route first: POST /api/scenarios/{id}/run-engine
- * Falls back to:          POST /api/engine/run?scenario_id={id}
- * so FE works regardless of router prefix differences.
+function toQuery(params: Record<string, string | number | boolean | undefined>) {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v === undefined || v === null || v === "") return;
+    q.set(k, String(v));
+  });
+  return q.toString();
+}
+
+/* ------------------------------------------------------------------ */
+/* API                                                                */
+/* ------------------------------------------------------------------ */
+
+/** Engine’ı çalıştırır (preview veya persist flag’i BE default’larına göre) */
+export async function runEngine(scenarioId: number, body: Record<string, any> = {}) {
+  // Not: api.ts otomatik /api eklemediği için yol bilinçli /api ile başlıyor
+  return apiPost(`/api/scenarios/${scenarioId}/run-engine`, body);
+}
+
+/**
+ * Engine facts (preview veya persisted) çeker.
+ * Kök neden düzeltmesi: `series` dizisi TEK parametre olarak gönderilir.
  */
-export async function runEngine(scenarioId: number, body: any) {
-  try {
-    return await apiPost(`/scenarios/${scenarioId}/run-engine`, body);
-  } catch (e: any) {
-    const status = (e as ApiError)?.status ?? 0;
-    // 404/405 => try legacy endpoint
-    if (status === 404 || status === 405) {
-      const q = new URLSearchParams({ scenario_id: String(scenarioId) });
-      const legacyBody = { ...body, scenario_id: scenarioId };
-      return await apiPost(`/engine/run?${q.toString()}`, legacyBody);
-    }
-    throw e;
-  }
-}
+export async function getEngineFacts(opts: GetFactsOpts): Promise<EngineFactRow[]> {
+  const {
+    scenarioId,
+    sheet,
+    series,
+    yyyymmFrom,
+    yyyymmTo,
+    persisted,
+    page,
+    pageSize,
+  } = opts;
 
-export async function checkBoqCoverage(
-  scenarioId: number,
-  section: "AN" | "EM" | "IE"
-) {
-  const qs = new URLSearchParams({ section });
-  return apiGet(`/scenarios/${scenarioId}/boq/check-coverage?${qs.toString()}`);
-}
+  const seriesStr = normalizeSeries(series);
 
-// -------- Facts --------
-export type EngineFactsRow = {
-  run_id: number;
-  scenario_id: number;
-  sheet_code: string;
-  category_code: string;
-  yyyymm: number;
-  value: number;
-  series?: "revenue" | "cogs" | "gp";
-};
+  const query = toQuery({
+    scenario_id: scenarioId,
+    sheet,
+    series: seriesStr, // <— TEK parametre, virgüllü
+    yyyymm_from: yyyymmFrom,
+    yyyymm_to: yyyymmTo,
+    persisted: persisted ? 1 : 0,
+    page,
+    page_size: pageSize,
+  });
 
-export type EngineFactsResponse = {
-  scenario_id: number;
-  sheet?: string | null;
-  category?: string | null;
-  run_id?: number | null;
-  count: number;
-  rows: EngineFactsRow[];
-};
-
-export type GetFactsArgs = {
-  scenario_id: number;
-  sheet?: string;               // FE name → BE param: sheet_code
-  category?: string;            // FE name → BE param: category_code
-  series?: string | string[];   // "revenue" | "cogs" | "gp"
-  run_id?: number;
-  latest?: boolean;
-  yyyymm_from?: number;
-  yyyymm_to?: number;
-  limit?: number;
-  offset?: number;
-  group_by?: "series" | "yyyymm" | "sheet" | "category";
-  rollup?: "quarter" | "year";
-};
-
-/** Backward-compat: also accepts { scenarioId } and maps to { scenario_id }. Normalizes 404 → empty rows. */
-export async function getEngineFacts(args: GetFactsArgs | (Partial<GetFactsArgs> & { scenarioId?: number })): Promise<EngineFactsResponse> {
-  const a: any = { ...args };
-  if (a.scenario_id == null && a.scenarioId != null) a.scenario_id = a.scenarioId;
-
-  const params = new URLSearchParams();
-  if (a.scenario_id == null) throw new Error("scenario_id is required");
-  params.set("scenario_id", String(a.scenario_id));
-  if (a.sheet) params.set("sheet_code", a.sheet);
-  if (a.category) params.set("category_code", a.category);
-  if (Array.isArray(a.series)) a.series.forEach((s: string) => params.append("series", s));
-  else if (a.series) params.set("series", a.series);
-  if (a.run_id != null) params.set("run_id", String(a.run_id));
-  if (a.latest) params.set("latest", "true");
-  if (a.yyyymm_from) params.set("yyyymm_from", String(a.yyyymm_from));
-  if (a.yyyymm_to) params.set("yyyymm_to", String(a.yyyymm_to));
-  if (a.limit) params.set("limit", String(a.limit));
-  if (a.offset) params.set("offset", String(a.offset));
-  if (a.group_by) params.set("group_by", a.group_by);
-  if (a.rollup) params.set("rollup", a.rollup);
+  const url = `/api/engine/facts?${query}`;
 
   try {
-    return await apiGet<EngineFactsResponse>(`/engine/facts?${params.toString()}`);
+    const res = await apiGet<EngineFactsResponse>(url);
+    return Array.isArray(res?.rows) ? res.rows : [];
   } catch (e: any) {
-    const status = (e as ApiError)?.status ?? 0;
-    if (status === 404) {
-      return { scenario_id: Number(a.scenario_id || 0), count: 0, rows: [] };
-    }
+    // Sprint notuna göre: 404 "No data found..." → boş dizi dön
+    if (e?.status === 404) return [];
     throw e;
   }
 }

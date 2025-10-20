@@ -378,7 +378,7 @@ function Typeahead<T>({
 
 export default function ServicesTable({ scenarioId, onChanged, onMarkedReady }: Props) {
   // IMPORTANT: services CRUD lives under legacy /scenarios prefix (no /api)
-  const baseUrl = `/scenarios/${scenarioId}/services`;
+    const baseUrl = `/api/scenarios/${scenarioId}/services`;
 
   const [rows, setRows] = useState<ServiceRow[]>([]);
   const [loading, setLoading] = useState(false);

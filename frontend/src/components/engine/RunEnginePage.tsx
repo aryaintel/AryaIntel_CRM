@@ -1,7 +1,8 @@
 // relative path: frontend/src/components/engine/RunEnginePage.tsx
 // Path: frontend/src/components/engine/RunEnginePage.tsx
 import React, { useEffect, useMemo, useState, type ReactNode } from "react";
-import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, getEngineFacts } from "../../api/engine";
+import { runEngine, getEngineFacts } from "../../api/engine";
+import { apiGet } from "../../lib/api";
 
 /**
  * Run Engine — All-in-One (Single File)
@@ -11,9 +12,9 @@ import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, getEngineFacts } from "..
  * • Alt   : Persisted Facts (oA.Finance-*) — series pivot
  *
  * NOT — Kritik düzeltmeler:
- * 1) facts çağrısında server’a seri filtresi göndermiyoruz; tüm serileri çekip client’ta filtreliyoruz.
+ * 1) facts çağrısında series dizi olarak gelse de API’ye TEK parametre (virgüllü) gider (engine.ts bunu yapıyor).
  * 2) facts yanıtı hem { rows:[...] } hem de doğrudan [] ise desteklenir.
- * 3) sheet filtreleme client-side prefix eşleme ile yapılır (SHEET_BY_MODE).
+ * 3) sheet bazlı persisted seçimi otomatik yapılır (oA./oQ. → persisted: true).
  */
 
 // ==== Türler & Yardımcılar ===================================================
@@ -61,6 +62,15 @@ const SHEET_BY_MODE: Record<Mode, { AN: string; Services: string }> = {
   month:   { AN: "c.Sales-AN",       Services: "c.Sales-Services" },
   quarter: { AN: "oQ.Finance-AN",    Services: "oQ.Finance-Services" },
   year:    { AN: "oA.Finance-AN",    Services: "oA.Finance-Services" },
+};
+
+// Varsayılan engine seçenekleri (yerel)
+const DEFAULT_OPTIONS = {
+  rise_and_fall: false,
+  fx_apply: false,
+  tax_apply: false,
+  rebates_apply: false,
+  twc_apply: false,
 };
 
 function buildRequest(selected: CatState, opts: any, persist: boolean): EngineRunRequest {
@@ -164,6 +174,23 @@ function pickRowsBySheet(all: FactRow[], desired: string): FactRow[] {
   return [];
 }
 
+/** BOQ Coverage — lib/apiBoq.ts’de export yoksa, güvenli yerel yardımcı */
+type BoqCoverageResponse = { notes?: string[] };
+async function checkBoqCoverage(scenarioId: number, category: "AN" | "EM" | "IE") {
+  // Önce senaryoya bağlı rota (varsa), yoksa genel rota:
+  const url1 = `/api/scenarios/${scenarioId}/boq/coverage?category=${category}`;
+  const url2 = `/api/boq/coverage?scenario_id=${scenarioId}&category=${category}`;
+  try {
+    return await apiGet<BoqCoverageResponse>(url1);
+  } catch (e: any) {
+    if (e?.status === 404) {
+      try { return await apiGet<BoqCoverageResponse>(url2); }
+      catch { return { notes: [] } as BoqCoverageResponse; }
+    }
+    throw e;
+  }
+}
+
 // ==== Sayfa ==================================================================
 export default function RunEnginePage({
   scenarioId: scenarioIdProp,
@@ -211,12 +238,12 @@ export default function RunEnginePage({
     }
   };
 
-  const checkCoverage = async () => {
+  const doCheckCoverage = async () => {
     const sections = (["AN", "EM", "IE"] as const).filter((c) => cats[c]);
     const notes: { AN: string[]; EM: string[]; IE: string[] } = { AN: [], EM: [], IE: [] };
     for (const s of sections) {
       try {
-        const res: any = await checkBoqCoverage(scenarioId, s);
+        const res = await checkBoqCoverage(scenarioId, s);
         (notes as any)[s] = res?.notes || [];
       } catch {
         (notes as any)[s] = ["error"];
@@ -225,27 +252,30 @@ export default function RunEnginePage({
     setCoverage(notes);
   };
 
-  // ---------- Pivot veri (API: /api/engine/facts + category) ----------
-  async function fetchFacts(opts: {
+  // ---------- Pivot veri (API: /api/engine/facts) ----------
+  async function fetchFacts(optsIn: {
     scenarioId: number;
     sheet: string;
     series: ("revenue" | "cogs" | "gp")[];
     category: "AN" | "Services";
   }) {
-     const payload = await getEngineFacts({
-      scenario_id: opts.scenarioId,
-      sheet: opts.sheet,
-      category: opts.category,
-      series: opts.series,
-      latest: true,
+    // oA./oQ. → persisted true; c.Sales → false
+    const persisted = /^o[QA]\.Finance/.test(optsIn.sheet);
+
+    const payload = await getEngineFacts({
+      scenarioId: optsIn.scenarioId,
+      sheet: optsIn.sheet,
+      series: optsIn.series,
+      persisted,
     });
+
     const rowsRaw = Array.isArray((payload as any)?.rows)
       ? (payload as any).rows
       : Array.isArray(payload as any)
         ? (payload as any)
         : [];
     const all = normalizeRows(rowsRaw as any[]);
-    return pickRowsBySheet(all, opts.sheet);
+    return pickRowsBySheet(all, optsIn.sheet);
   }
 
   // ---------- AN & Services Pivot State ----------
@@ -373,7 +403,7 @@ export default function RunEnginePage({
               {busy ? "Persisting..." : "Run & Persist"}
             </button>
             <button className="rounded-md bg-gray-100 text-gray-800 px-3 py-2 border"
-                    onClick={checkCoverage} disabled={busy}>
+                    onClick={doCheckCoverage} disabled={busy}>
               Check BOQ Coverage
             </button>
 
