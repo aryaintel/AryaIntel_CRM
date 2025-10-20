@@ -1,6 +1,6 @@
 // frontend/src/components/engine/RunEnginePage.tsx
 import React, { useEffect, useMemo, useState, type ReactNode } from "react";
-import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, format1 } from "../../api/engine";
+import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage } from "../../api/engine";
 
 /**
  * Run Engine — All-in-One (Single File)
@@ -9,12 +9,16 @@ import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, format1 } from "../../api
  * • Orta  : Excel paralelli P&L Pivot (Monthly / Quarterly / Annual)
  * • Alt   : Persisted Facts (oA.Finance-*) — series pivot
  *
- * Bu dosya, önceki EngineFinancePivot / EngineFactsGrid / EngineResultsTabs
- * komponentlerinin yerini alır. (Tek-UI yaklaşımı)
+ * NOT — Kritik düzeltmeler:
+ * 1) series paramı: yalnızca TEK seri seçiliyken gönderilir. Çoklu seçimde server'a gönderilmez,
+ *    ya da 'series_str' ile "," ayrılmış olarak gönderilir (backend destekli). (bkz. fetchFacts)
+ * 2) facts yanıtı: { rows: [...] } yapısından okunur; dizi dönerse de desteklenir.
+ * 3) sheet filtreleme: server'a sheet gönderME, client-side prefix eşleme + fallback uygula.
+ *    Böylece DB'de oA.* dursa bile Monthly görünüm boş kalmaz.
  */
 
 // ==== Türler & Yardımcılar ===================================================
-const CATS = ["AN", "EM", "IE", "Services"] as const;          // <- export kaldırıldı (Vite HMR uyarısı çözümü)
+const CATS = ["AN", "EM", "IE", "Services"] as const; // HMR: export yok
 type EngineCategoryCode = typeof CATS[number];
 
 type EngineCategory = { code: EngineCategoryCode; enabled: boolean };
@@ -50,8 +54,10 @@ type FactRow = {
   series: SeriesKey;     // revenue | cogs | gp
   value: number;
   sheet_code: string;    // c.Sales-AN, oA.Finance-Services, ...
+  category_code?: string | null;
 };
 
+// Excel-parite: İstenen sheet İSİMLERİ
 const SHEET_BY_MODE: Record<Mode, { AN: string; Services: string }> = {
   month:   { AN: "c.Sales-AN",       Services: "c.Sales-Services" },
   quarter: { AN: "oQ.Finance-AN",    Services: "oQ.Finance-Services" },
@@ -116,6 +122,47 @@ function fmt(n?: number) {
   catch { return String(n); }
 }
 
+// ---------- Yardımcılar ----------
+function normalizeRows(rows: any[]): FactRow[] {
+  return rows.map((r) => {
+    const ym = String(r.yyyymm ?? "");
+    const y = ym.slice(0, 4), m = ym.slice(4, 6);
+    const sheet = String(r.sheet_code ?? "");
+    const sRaw = String(r.series ?? "").toLowerCase();
+    let sNorm: SeriesKey;
+    if (sRaw === "revenue" || sRaw === "cogs" || sRaw === "gp") {
+      sNorm = sRaw as SeriesKey;
+    } else {
+      const sc = sheet.toLowerCase();
+      if (sc.includes(".cogs")) sNorm = "cogs";
+      else if (sc.includes(".gp")) sNorm = "gp";
+      else sNorm = "revenue";
+    }
+    const val = Number(r.value ?? 0);
+    return {
+      yyyymm: ym && ym.length === 6 ? `${y}-${m}` : (r.yyyymm ?? ""),
+      series: sNorm,
+      value: Number.isFinite(val) ? val : 0,
+      sheet_code: sheet,
+      category_code: r.category_code ?? null,
+    };
+  });
+}
+function pickRowsBySheet(all: FactRow[], desired: string): FactRow[] {
+  // 1) Tam eşleşme veya prefix (desired.*)
+  let out = all.filter(r => r.sheet_code === desired || r.sheet_code?.startsWith(desired + "."));
+  if (out.length) return out;
+  // 2) Akıllı fallback (aynı tail ile farklı family)
+  const tail = desired.split("-").slice(1).join("-"); // AN | Services
+  const families = ["c.Sales", "oQ.Finance", "oA.Finance"];
+  for (const f of families) {
+    const cand = `${f}-${tail}`;
+    out = all.filter(r => r.sheet_code === cand || r.sheet_code?.startsWith(cand + "."));
+    if (out.length) return out;
+  }
+  return [];
+}
+
 // ==== Sayfa ==================================================================
 export default function RunEnginePage({
   scenarioId: scenarioIdProp,
@@ -178,32 +225,30 @@ export default function RunEnginePage({
   };
 
   // ---------- Pivot veri (API: /api/engine/facts + category) ----------
-// ✅ DOĞRU PARAM İSİMLERİYLE GÜNCELLENMİŞ SÜRÜM
-async function fetchFacts(opts: {
-  scenarioId: number;
-  sheet: string;                 // "oA.Finance-AN" vb.
-  series: ("revenue" | "cogs" | "gp")[];
-  category: "AN" | "Services";
-}) {
-  const qs = new URLSearchParams();
-  qs.set("scenario_id", String(opts.scenarioId));
+  async function fetchFacts(opts: {
+    scenarioId: number;
+    sheet: string;                 // istenen sheet prefix (örn. c.Sales-AN)
+    series: ("revenue" | "cogs" | "gp")[];
+    category: "AN" | "Services";
+  }) {
+    const qs = new URLSearchParams();
+    qs.set("scenario_id", String(opts.scenarioId));
+    qs.set("category_code", opts.category); qs.set("category", opts.category);
+    qs.set("latest", "true");
 
-  // Eski/yeni backend varyasyonlarını desteklemek için ikisini birden gönderiyoruz:
-  qs.set("sheet_code", opts.sheet);
-  qs.set("sheet", opts.sheet);
-
-  qs.set("category_code", opts.category);
-  qs.set("category", opts.category);
-
-  qs.set("series", opts.series.join(","));
-  qs.set("group_by", "series");
-
-  const res = await fetch(`/api/engine/facts?${qs.toString()}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  return Array.isArray(data) ? data : [];
-}
-
+    if (opts.series.length === 1) {
+      qs.set("series", opts.series[0] as string);
+    } else if (opts.series.length > 1) {
+      // Backend 'series_str' virgüllü stringi destekliyor; 'series' paramını göndermiyoruz.
+      qs.set("series_str", opts.series.join(","));
+    }
+    const res = await fetch(`/api/engine/facts?${qs.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const payload = await res.json();
+    const rows = Array.isArray(payload) ? payload : (payload?.rows || []);
+    const all = normalizeRows(rows);
+    return pickRowsBySheet(all, opts.sheet);
+  }
 
   // ---------- AN & Services Pivot State ----------
   const [rowsAN, setRowsAN] = useState<FactRow[]>([]);

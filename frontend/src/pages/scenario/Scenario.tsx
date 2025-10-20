@@ -488,7 +488,7 @@ export default function ScenarioPage() {
       {/* Engine panel: SADECE Calculation grubunda */}
       {mainGroup === "calculation" && id ? (
         <div className="rounded border p-4 bg-white">
-          <RunEnginePage scenarioId={id!} />
+        <RunEnginePage key={id} scenarioId={id!} />
         </div>
       ) : null}
 

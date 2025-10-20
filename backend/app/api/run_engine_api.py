@@ -1,20 +1,27 @@
+# Path: backend/app/api/run_engine_api.py
 from __future__ import annotations
 
-from typing import List, Dict, Optional, Literal, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import date
 import json
+import re
+from enum import Enum
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-# Project deps
-from .deps import get_db  # type: ignore
+# Project deps (absolute import to avoid relative-import issues in Swagger schema build)
+from app.api.deps import get_db  # type: ignore
 
 router = APIRouter(prefix="/api", tags=["engine"])
 
-CategoryCode = Literal["AN", "EM", "IE", "Services"]
+class CategoryCode(str, Enum):
+    AN = "AN"
+    EM = "EM"
+    IE = "IE"
+    Services = "Services"
 
 class EngineCategory(BaseModel):
     code: CategoryCode
@@ -30,16 +37,16 @@ class EngineOptions(BaseModel):
 class RunEngineRequest(BaseModel):
     categories: List[EngineCategory]
     options: EngineOptions = Field(default_factory=EngineOptions)
-    persist: bool = False  # persist to engine_facts_monthly
-    include_facts: bool = False  # NEW: also return finance facts in preview
+    persist: bool = False              # persist to engine_facts_monthly
+    include_facts: bool = False        # preview için üretilen serileri de döndür
 
 class EngineLocks(BaseModel):
     rise_and_fall: bool  # true means locked ON (cannot be turned off)
 
 class SheetPayload(BaseModel):
-    name: str
-    months: List[str]
-    values: List[float]
+    name: str            # ör: "oA.Finance-AN.Revenue" veya "oQ.Finance-AN.GP"
+    months: List[str]    # ["YYYY-MM", ...]
+    values: List[float]  # aynı uzunlukta
 
 class RunEngineResult(BaseModel):
     scenario_id: int
@@ -49,6 +56,9 @@ class RunEngineResult(BaseModel):
     persisted: bool = False
     persisted_rows: int = 0
     run_id: Optional[int] = None
+
+
+# --------------------- Yardımcılar ---------------------
 
 def _fetch_scenario(db: Session, scenario_id: int):
     row = db.execute(text("""
@@ -102,9 +112,9 @@ def _apply_dso_to_cash(accrual: List[float], dso_days: Optional[int]) -> List[fl
             out[j] += v
     return out
 
-# ---------------------
-# Data fetchers
-# ---------------------
+
+# --------------------- Data fetchers ---------------------
+
 def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int, start: date) -> Tuple[List[float], List[float]]:
     """Returns (revenue_accrual, cogs_accrual) series from BOQ (qty*price, qty*unit_cogs)."""
     rev = [0.0] * months
@@ -145,6 +155,7 @@ def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int,
                 cogs[offset + i] += per_cogs
     return rev, cogs
 
+
 def _schedule_services_expense_raw(db: Session, scenario_id: int, months: int, start: date) -> Tuple[List[float], List[Optional[str]]]:
     sched = [0.0] * months
     cur_series: List[Optional[str]] = [None] * months
@@ -170,6 +181,7 @@ def _schedule_services_expense_raw(db: Session, scenario_id: int, months: int, s
             cur_series[idx] = currency or cur_series[idx]
     return sched, cur_series
 
+
 def _fx_rate_for_month(db: Session, scenario_id: int, currency: str, y: int, m: int) -> Optional[float]:
     row = db.execute(text("""
         SELECT rate_to_base
@@ -181,6 +193,7 @@ def _fx_rate_for_month(db: Session, scenario_id: int, currency: str, y: int, m: 
         LIMIT 1
     """), {"sid": scenario_id, "cur": currency, "y": y, "m": m}).mappings().first()
     return float(row["rate_to_base"]) if row and row["rate_to_base"] is not None else None
+
 
 def _apply_fx_on_services(db: Session, scenario_id: int, start: date, series: List[float], currencies: List[Optional[str]]) -> List[float]:
     out = series[:]
@@ -194,9 +207,9 @@ def _apply_fx_on_services(db: Session, scenario_id: int, start: date, series: Li
             out[i] = val * rate
     return out
 
-# ---------------------
-# Escalation (Rise & Fall)
-# ---------------------
+
+# --------------------- Rise & Fall ---------------------
+
 def _load_index_series(db: Session, code: str) -> Dict[Tuple[int,int], float]:
     pts = db.execute(text("""
         SELECT p.year, p.month, p.value
@@ -225,8 +238,8 @@ def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int
         if scope not in ("ALL","AN","EM","IE","SERVICES"):
             continue
         if scope != "ALL" and (
-            (scope == "SERVICES" and category != "Services") or
-            (scope != "SERVICES" and scope != category)
+            (scope == "SERVICES" and category != CategoryCode.Services) or
+            (scope != "SERVICES" and scope != category.value)
         ):
             continue
         method = (r.get("method") or "fixed").lower()
@@ -257,9 +270,9 @@ def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int
                     mult[i] *= (cur / base_val)
     return mult
 
-# ---------------------
-# Rebates
-# ---------------------
+
+# --------------------- Rebates ---------------------
+
 def _load_rebates(db: Session, scenario_id: int) -> Dict[str, Any]:
     head = db.execute(text("""
         SELECT id, scope, kind, basis, pay_month_lag
@@ -323,9 +336,9 @@ def _apply_rebates(accrual_rev: List[float], start: date, months: int, rb: Dict[
                             cash_out[j] -= L["amt"]
     return accrual_net, cash_out
 
-# ---------------------
-# TAX (services only in this version)
-# ---------------------
+
+# --------------------- Vergi (services) ---------------------
+
 def _apply_tax_on_services(db: Session, scenario_id: int, start: date, base_series: List[float]) -> List[float]:
     rows = db.execute(text("""
         SELECT rate_pct, is_inclusive, start_year, start_month, end_year, end_month, applies_to
@@ -351,9 +364,31 @@ def _apply_tax_on_services(db: Session, scenario_id: int, start: date, base_seri
             add[i] += base_series[i] * rate
     return [base_series[i] + add[i] for i in range(len(base_series))]
 
-# ---------------------
-# Persist helpers
-# ---------------------
+
+# --------------------- Persist yardımcıları ---------------------
+
+_SERIES_SUFFIX_MAP = {
+    ".REVENUE": "revenue",
+    ".COGS": "cogs",
+    ".GP": "gp",
+}
+
+_SUFFIX_RE = re.compile(r"\.(REVENUE|COGS|GP)$", flags=re.IGNORECASE)
+
+def _split_name_to_sheet_and_series(name: str) -> Tuple[str, Optional[str]]:
+    """
+    'oA.Finance-AN.Revenue'  -> ('oA.Finance-AN', 'revenue')
+    'oQ.Finance-AN.COGS'     -> ('oQ.Finance-AN', 'cogs')
+    'c.Sales-AN'             -> ('c.Sales-AN', None)     # persist etmemeyi tercih edebiliriz
+    """
+    m = _SUFFIX_RE.search(name)
+    if not m:
+        return name, None
+    suffix = m.group(0).upper()
+    series = _SERIES_SUFFIX_MAP.get(suffix, None)
+    sheet = name[: -len(suffix)]
+    return sheet, series
+
 def _parse_category_from_name(name: str) -> str:
     """Extract category token after first '-' and before optional '.'"""
     if "-" not in name:
@@ -361,9 +396,11 @@ def _parse_category_from_name(name: str) -> str:
     tail = name.split("-", 1)[1]
     return tail.split(".", 1)[0]
 
-def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, generated: List[SheetPayload]) -> Tuple[int, Optional[int]]:
-    """Insert a run row and facts; returns (rows_inserted, run_id)."""
-    # Ensure engine tables exist (idempotent runtime guard)
+def _ensure_schema(db: Session) -> None:
+    """
+    Tabloları ve gerekli indexleri (series dahil) güvenceye alır.
+    Eski unique index varsa kalsın; yeni index (series dahil) eklenir.
+    """
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS engine_sheets (
             code TEXT PRIMARY KEY,
@@ -396,15 +433,24 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
             category_code TEXT NOT NULL,
             yyyymm INTEGER NOT NULL,
             value NUMERIC(18,6) NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            series TEXT
         )
     """))
+    # series sütunu yoksa ekle
+    cols = db.execute(text("PRAGMA table_info('engine_facts_monthly')")).fetchall()
+    colnames = { (c[1] if isinstance(c, (list, tuple)) else c["name"]) for c in cols }
+    if "series" not in { str(n) for n in colnames }:
+        db.execute(text("ALTER TABLE engine_facts_monthly ADD COLUMN series TEXT"))
+
+    # yeni unique index
     db.execute(text("""
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_engine_facts
-        ON engine_facts_monthly(run_id, sheet_code, category_code, yyyymm)
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_efm_run_sheet_cat_yyyymm_series
+        ON engine_facts_monthly(run_id, sheet_code, category_code, yyyymm, series)
     """))
-    # Seed minimal sheet/category keys (no-op if exist)
-    for i, s in enumerate(("c.Sales","oA.Finance","oQ.Finance")):
+
+    # küçük seed
+    for i, s in enumerate(("c.Sales", "oA.Finance", "oQ.Finance")):
         db.execute(text("""
             INSERT INTO engine_sheets (code, name, sort_order)
             SELECT :c, :n, :o
@@ -417,6 +463,14 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
             WHERE NOT EXISTS (SELECT 1 FROM engine_categories WHERE code=:c)
         """), {"c": c, "n": c, "o": i})
 
+def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, generated: List[SheetPayload]) -> Tuple[int, Optional[int]]:
+    """
+    Insert a run row and facts; returns (rows_inserted, run_id).
+    Artık persist ederken 'sheet_code' = 'oA.Finance-AN' / 'oQ.Finance-AN' ve
+    'series' = revenue|cogs|gp olacak.
+    """
+    _ensure_schema(db)
+
     # Insert run
     opts = {"options": req.options.dict(), "categories": [c.dict() for c in req.categories]}
     db.execute(text("""
@@ -426,39 +480,62 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
     run_id = db.execute(text("SELECT id FROM engine_runs ORDER BY id DESC LIMIT 1")).scalar()
 
     inserted = 0
+
     for s in generated:
-        # Persist full sheet name (e.g., "oA.Finance-AN.Revenue") so FE can filter exactly.
-        sheet_code = s.name
-        category_code = _parse_category_from_name(s.name)
+        # sheet/series ayrıştır
+        base_sheet, series = _split_name_to_sheet_and_series(s.name)
+        if series is None:
+            # c.Sales-* gibi serileri DB'ye yazmıyoruz (isteğe göre yazılabilir)
+            continue
+
+        category_code = _parse_category_from_name(base_sheet)
         months = s.months
         vals = s.values
+
         for i in range(len(vals)):
             ym = months[i]  # "YYYY-MM"
             y, m = ym.split("-")
             yyyymm = int(y) * 100 + int(m)
             db.execute(text("""
-                INSERT OR IGNORE INTO engine_facts_monthly
-                (run_id, scenario_id, sheet_code, category_code, yyyymm, value)
-                VALUES (:rid, :sid, :sheet, :cat, :yyyymm, :val)
-            """), {"rid": run_id, "sid": scenario_id, "sheet": sheet_code, "cat": category_code, "yyyymm": yyyymm, "val": float(vals[i])})
+                INSERT INTO engine_facts_monthly
+                    (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value)
+                VALUES
+                    (:rid, :sid, :sheet, :cat, :yyyymm, :series, :val)
+                ON CONFLICT(run_id, sheet_code, category_code, yyyymm, series)
+                DO UPDATE SET value = excluded.value
+            """), {
+                "rid": run_id,
+                "sid": scenario_id,
+                "sheet": base_sheet,
+                "cat": category_code,
+                "yyyymm": yyyymm,
+                "series": series,
+                "val": float(vals[i]),
+            })
             inserted += 1
 
     # Close run
     db.execute(text("UPDATE engine_runs SET finished_at = CURRENT_TIMESTAMP WHERE id = :rid"), {"rid": run_id})
+
+    # Eski dönemde kalmış '...COGS' / '...GP' sheet adları varsa temizlemek istersen:
+    db.execute(text("""
+        DELETE FROM engine_facts_monthly
+        WHERE sheet_code IN ('oA.Finance-AN.COGS','oA.Finance-AN.GP',
+                             'oQ.Finance-AN.COGS','oQ.Finance-AN.GP')
+          AND run_id = :rid
+    """), {"rid": run_id})
+
     return inserted, int(run_id) if run_id is not None else None
 
-# ---------------------
-# Endpoint
-# ---------------------
+
+# --------------------- Endpoint ---------------------
+
 @router.post("/scenarios/{scenario_id}/run-engine", response_model=RunEngineResult)
 def run_engine(
     scenario_id: int = Path(..., ge=1),
-    req: RunEngineRequest = None,
+    req: RunEngineRequest = ...,
     db: Session = Depends(get_db),
 ):
-    if req is None:
-        req = RunEngineRequest(categories=[EngineCategory(code="AN")])
-
     sc = _fetch_scenario(db, scenario_id)
     months = sc["months"]
     months_axis = _ym_series(sc["start_date"], months)
@@ -466,7 +543,7 @@ def run_engine(
     enabled_codes = [c.code for c in req.categories if c.enabled]
 
     # R&F lock (scope-aware)
-    locks = EngineLocks(rise_and_fall=_has_rise_fall_policy(db, scenario_id, enabled_codes))
+    locks = EngineLocks(rise_and_fall=_has_rise_fall_policy(db, scenario_id, [e.value for e in enabled_codes]))
 
     # TWC (DSO)
     twc = db.execute(text("""
@@ -477,10 +554,10 @@ def run_engine(
     generated: List[SheetPayload] = []
 
     for code in enabled_codes:
-        if code in ("AN", "EM", "IE"):
-            rev, cogs = _schedule_from_boq(db, scenario_id, code, months, sc["start_date"])
+        if code in (CategoryCode.AN, CategoryCode.EM, CategoryCode.IE):
+            rev, cogs = _schedule_from_boq(db, scenario_id, code.value, months, sc["start_date"])
 
-            # Rise & Fall (if enabled or locked) — apply to both revenue & cogs
+            # Rise & Fall (if enabled or locked)
             if req.options.rise_and_fall or locks.rise_and_fall:
                 rf_mult = _build_rf_multiplier(db, scenario_id, sc["start_date"], months, code)
                 rev = [rev[i] * rf_mult[i] for i in range(months)]
@@ -497,12 +574,12 @@ def run_engine(
 
             def R(lst): return [round(x, 2) for x in lst]
 
-            # c.Sales (index/ratios) – keep legacy
-            generated.append(SheetPayload(name=f"c.Sales-{code}", months=months_axis, values=R(rev_net)))
+            # c.Sales (legacy index / görünüm)
+            generated.append(SheetPayload(name=f"c.Sales-{code.value}", months=months_axis, values=R(rev_net)))
 
             # oA – accrual facts split
-            oa_prefix = f"oA.Finance-{code}"
-            oq_prefix = f"oQ.Finance-{code}"
+            oa_prefix = f"oA.Finance-{code.value}"
+            oq_prefix = f"oQ.Finance-{code.value}"
             part = [
                 SheetPayload(name=f"{oa_prefix}.Revenue", months=months_axis, values=R(rev_net)),
                 SheetPayload(name=f"{oa_prefix}.COGS",    months=months_axis, values=R(cogs)),
@@ -510,35 +587,32 @@ def run_engine(
             ]
             generated.extend(part)
 
-            # oQ – simple cash timing from revenue net rebates (COGS assumed same-month cash out in this MVB)
+            # oQ – cash timing (GP = cash_in - cogs)
             generated.append(SheetPayload(name=f"{oq_prefix}.Revenue", months=months_axis, values=R(cash_in)))
             generated.append(SheetPayload(name=f"{oq_prefix}.COGS",    months=months_axis, values=R(cogs)))
             generated.append(SheetPayload(name=f"{oq_prefix}.GP",      months=months_axis, values=R([cash_in[i]-cogs[i] for i in range(months)])))
 
-        elif code == "Services":
+        elif code == CategoryCode.Services:
             expense_raw, svc_curs = _schedule_services_expense_raw(db, scenario_id, months, sc["start_date"])
 
-            # FX on services using per-month currency series (if enabled)
             expense = expense_raw[:]
             if req.options.fx_apply:
                 expense = _apply_fx_on_services(db, scenario_id, sc["start_date"], expense, svc_curs)
 
-            # Rise & Fall / escalation on services
             if req.options.rise_and_fall or locks.rise_and_fall:
                 rf_mult = _build_rf_multiplier(db, scenario_id, sc["start_date"], months, code)
                 expense = [expense[i] * rf_mult[i] for i in range(months)]
 
-            # Tax (services) if apply
             if req.options.tax_apply:
                 expense = _apply_tax_on_services(db, scenario_id, sc["start_date"], expense)
 
             zeros = [0.0] * months
             def R(lst): return [round(x, 2) for x in lst]
 
-            # Keep legacy sales/services index
+            # legacy görünüm
             generated.append(SheetPayload(name="c.Sales-Services", months=months_axis, values=R(zeros)))
 
-            # Accrual & cash split for Services (Revenue=0, COGS=expense, GP = -expense)
+            # accrual & cash (Revenue=0, COGS=expense, GP=-expense)
             oa_prefix = "oA.Finance-Services"
             oq_prefix = "oQ.Finance-Services"
             generated.append(SheetPayload(name=f"{oa_prefix}.Revenue", months=months_axis, values=R(zeros)))
@@ -557,7 +631,6 @@ def run_engine(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Persist failed: {e}")
 
-    # If include_facts requested, nothing more to do here — 'generated' already carries the needed series.
     return RunEngineResult(
         scenario_id=sc["id"],
         generated=generated,
