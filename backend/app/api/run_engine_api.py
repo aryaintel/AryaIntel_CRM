@@ -61,8 +61,7 @@ class RunEngineResult(BaseModel):
 # --------------------- Yardımcılar ---------------------
 
 def _fetch_scenario(db: Session, scenario_id: int):
-    row = db.execute(text("""
-        SELECT id, months, start_date
+    row = db.execute(text("""            SELECT id, months, start_date
         FROM scenarios
         WHERE id = :sid
     """), {"sid": scenario_id}).mappings().first()
@@ -91,8 +90,7 @@ def _has_rise_fall_policy(db: Session, scenario_id: int, selected_categories: Op
     tokens = ["all"] + cats if cats else ["all", "an", "em", "ie", "services", "capex"]
     ph = ", ".join(f":s{i}" for i in range(len(tokens)))
     params = {"sid": scenario_id, **{f"s{i}": tok for i, tok in enumerate(tokens)}}
-    row = db.execute(text(f"""
-        SELECT 1
+    row = db.execute(text(f"""            SELECT 1
         FROM scenario_escalation_policies
         WHERE scenario_id = :sid
           AND COALESCE(is_active,1) = 1
@@ -119,8 +117,7 @@ def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int,
     """Returns (revenue_accrual, cogs_accrual) series from BOQ (qty*price, qty*unit_cogs)."""
     rev = [0.0] * months
     cogs = [0.0] * months
-    rows = db.execute(text("""
-        SELECT quantity, unit_price, unit_cogs, frequency, start_year, start_month, months as row_months
+    rows = db.execute(text("""            SELECT quantity, unit_price, unit_cogs, frequency, start_year, start_month, months as row_months
         FROM scenario_boq_items
         WHERE scenario_id = :sid AND (section = :section OR :section = 'ALL')
           AND (is_active = 1)
@@ -159,8 +156,7 @@ def _schedule_from_boq(db: Session, scenario_id: int, section: str, months: int,
 def _schedule_services_expense_raw(db: Session, scenario_id: int, months: int, start: date) -> Tuple[List[float], List[Optional[str]]]:
     sched = [0.0] * months
     cur_series: List[Optional[str]] = [None] * months
-    rows = db.execute(text("""
-        SELECT quantity, unit_cost, currency, start_year, start_month, duration_months
+    rows = db.execute(text("""            SELECT quantity, unit_cost, currency, start_year, start_month, duration_months
         FROM scenario_services
         WHERE scenario_id = :sid AND is_active = 1
     """), {"sid": scenario_id}).mappings().all()
@@ -183,8 +179,7 @@ def _schedule_services_expense_raw(db: Session, scenario_id: int, months: int, s
 
 
 def _fx_rate_for_month(db: Session, scenario_id: int, currency: str, y: int, m: int) -> Optional[float]:
-    row = db.execute(text("""
-        SELECT rate_to_base
+    row = db.execute(text("""            SELECT rate_to_base
         FROM scenario_fx_rates
         WHERE scenario_id = :sid AND currency = :cur
           AND (start_year IS NULL OR (start_year*100 + start_month) <= (:y*100 + :m))
@@ -211,8 +206,7 @@ def _apply_fx_on_services(db: Session, scenario_id: int, start: date, series: Li
 # --------------------- Rise & Fall ---------------------
 
 def _load_index_series(db: Session, code: str) -> Dict[Tuple[int,int], float]:
-    pts = db.execute(text("""
-        SELECT p.year, p.month, p.value
+    pts = db.execute(text("""            SELECT p.year, p.month, p.value
         FROM index_series s
         JOIN index_points p ON p.series_id = s.id
         WHERE s.code = :code
@@ -226,8 +220,7 @@ def _load_index_series(db: Session, code: str) -> Dict[Tuple[int,int], float]:
 
 def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int, category: CategoryCode) -> List[float]:
     mult = [1.0] * months
-    rows = db.execute(text("""
-        SELECT scope, method, fixed_pct, index_code, base_year, base_month, step_per_month, freq, is_active
+    rows = db.execute(text("""            SELECT scope, method, fixed_pct, index_code, base_year, base_month, step_per_month, freq, is_active
         FROM scenario_escalation_policies
         WHERE scenario_id = :sid
     """), {"sid": scenario_id}).mappings().all()
@@ -274,18 +267,15 @@ def _build_rf_multiplier(db: Session, scenario_id: int, start: date, months: int
 # --------------------- Rebates ---------------------
 
 def _load_rebates(db: Session, scenario_id: int) -> Dict[str, Any]:
-    head = db.execute(text("""
-        SELECT id, scope, kind, basis, pay_month_lag
+    head = db.execute(text("""            SELECT id, scope, kind, basis, pay_month_lag
         FROM scenario_rebates
         WHERE scenario_id = :sid
     """), {"sid": scenario_id}).mappings().all()
-    tiers = db.execute(text("""
-        SELECT rebate_id, min_value, max_value, percent
+    tiers = db.execute(text("""            SELECT rebate_id, min_value, max_value, percent
         FROM scenario_rebate_tiers
         ORDER BY rebate_id, COALESCE(sort_order, 0), COALESCE(min_value, 0)
     """)).mappings().all()
-    lumps = db.execute(text("""
-        SELECT rebate_id, year, month, amount
+    lumps = db.execute(text("""            SELECT rebate_id, year, month, amount
         FROM scenario_rebate_lumps
     """)).mappings().all()
     tiers_map: Dict[int, List[Dict[str, Any]]] = {}
@@ -340,8 +330,7 @@ def _apply_rebates(accrual_rev: List[float], start: date, months: int, rb: Dict[
 # --------------------- Vergi (services) ---------------------
 
 def _apply_tax_on_services(db: Session, scenario_id: int, start: date, base_series: List[float]) -> List[float]:
-    rows = db.execute(text("""
-        SELECT rate_pct, is_inclusive, start_year, start_month, end_year, end_month, applies_to
+    rows = db.execute(text("""            SELECT rate_pct, is_inclusive, start_year, start_month, end_year, end_month, applies_to
         FROM scenario_tax_rules
         WHERE scenario_id = :sid
     """), {"sid": scenario_id}).mappings().all()
@@ -401,22 +390,19 @@ def _ensure_schema(db: Session) -> None:
     Tabloları ve gerekli indexleri (series dahil) güvenceye alır.
     Eski unique index varsa kalsın; yeni index (series dahil) eklenir.
     """
-    db.execute(text("""
-        CREATE TABLE IF NOT EXISTS engine_sheets (
+    db.execute(text("""            CREATE TABLE IF NOT EXISTS engine_sheets (
             code TEXT PRIMARY KEY,
             name TEXT,
             sort_order INTEGER
         )
     """))
-    db.execute(text("""
-        CREATE TABLE IF NOT EXISTS engine_categories (
+    db.execute(text("""            CREATE TABLE IF NOT EXISTS engine_categories (
             code TEXT PRIMARY KEY,
             name TEXT,
             sort_order INTEGER
         )
     """))
-    db.execute(text("""
-        CREATE TABLE IF NOT EXISTS engine_runs (
+    db.execute(text("""            CREATE TABLE IF NOT EXISTS engine_runs (
             id INTEGER PRIMARY KEY,
             scenario_id INTEGER,
             started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -424,8 +410,7 @@ def _ensure_schema(db: Session) -> None:
             options_json TEXT
         )
     """))
-    db.execute(text("""
-        CREATE TABLE IF NOT EXISTS engine_facts_monthly (
+    db.execute(text("""            CREATE TABLE IF NOT EXISTS engine_facts_monthly (
             id INTEGER PRIMARY KEY,
             run_id INTEGER,
             scenario_id INTEGER,
@@ -437,28 +422,33 @@ def _ensure_schema(db: Session) -> None:
             series TEXT
         )
     """))
-    # series sütunu yoksa ekle
+    # PRAGMA sonucu Row (tuple-like) olabilir -> isme güvenilir şekilde ulaş
     cols = db.execute(text("PRAGMA table_info('engine_facts_monthly')")).fetchall()
-    colnames = { (c[1] if isinstance(c, (list, tuple)) else c["name"]) for c in cols }
-    if "series" not in { str(n) for n in colnames }:
+    colnames: set = set()
+    for c in cols:
+        try:
+            # SQLAlchemy Row: c._mapping['name']
+            name = c._mapping['name']  # type: ignore[attr-defined]
+        except Exception:
+            # Fallback: PRAGMA tablosunda 2. sütun 'name'
+            name = c[1]
+        colnames.add(str(name))
+    if "series" not in colnames:
         db.execute(text("ALTER TABLE engine_facts_monthly ADD COLUMN series TEXT"))
 
     # yeni unique index
-    db.execute(text("""
-        CREATE UNIQUE INDEX IF NOT EXISTS ux_efm_run_sheet_cat_yyyymm_series
+    db.execute(text("""            CREATE UNIQUE INDEX IF NOT EXISTS ux_efm_run_sheet_cat_yyyymm_series
         ON engine_facts_monthly(run_id, sheet_code, category_code, yyyymm, series)
     """))
 
     # küçük seed
     for i, s in enumerate(("c.Sales", "oA.Finance", "oQ.Finance")):
-        db.execute(text("""
-            INSERT INTO engine_sheets (code, name, sort_order)
+        db.execute(text("""                INSERT INTO engine_sheets (code, name, sort_order)
             SELECT :c, :n, :o
             WHERE NOT EXISTS (SELECT 1 FROM engine_sheets WHERE code=:c)
         """), {"c": s, "n": s, "o": i})
     for i, c in enumerate(("AN","EM","IE","Services","Spare1","Spare2")):
-        db.execute(text("""
-            INSERT INTO engine_categories (code, name, sort_order)
+        db.execute(text("""                INSERT INTO engine_categories (code, name, sort_order)
             SELECT :c, :n, :o
             WHERE NOT EXISTS (SELECT 1 FROM engine_categories WHERE code=:c)
         """), {"c": c, "n": c, "o": i})
@@ -473,8 +463,7 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
 
     # Insert run
     opts = {"options": req.options.dict(), "categories": [c.dict() for c in req.categories]}
-    db.execute(text("""
-        INSERT INTO engine_runs (scenario_id, options_json)
+    db.execute(text("""            INSERT INTO engine_runs (scenario_id, options_json)
         VALUES (:sid, :opts)
     """), {"sid": scenario_id, "opts": json.dumps(opts)})
     run_id = db.execute(text("SELECT id FROM engine_runs ORDER BY id DESC LIMIT 1")).scalar()
@@ -496,8 +485,7 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
             ym = months[i]  # "YYYY-MM"
             y, m = ym.split("-")
             yyyymm = int(y) * 100 + int(m)
-            db.execute(text("""
-                INSERT INTO engine_facts_monthly
+            db.execute(text("""                    INSERT INTO engine_facts_monthly
                     (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value)
                 VALUES
                     (:rid, :sid, :sheet, :cat, :yyyymm, :series, :val)
@@ -518,8 +506,7 @@ def _persist_results(db: Session, scenario_id: int, req: RunEngineRequest, gener
     db.execute(text("UPDATE engine_runs SET finished_at = CURRENT_TIMESTAMP WHERE id = :rid"), {"rid": run_id})
 
     # Eski dönemde kalmış '...COGS' / '...GP' sheet adları varsa temizlemek istersen:
-    db.execute(text("""
-        DELETE FROM engine_facts_monthly
+    db.execute(text("""            DELETE FROM engine_facts_monthly
         WHERE sheet_code IN ('oA.Finance-AN.COGS','oA.Finance-AN.GP',
                              'oQ.Finance-AN.COGS','oQ.Finance-AN.GP')
           AND run_id = :rid
@@ -536,6 +523,11 @@ def run_engine(
     req: RunEngineRequest = ...,
     db: Session = Depends(get_db),
 ):
+    """
+    Runs the engine for selected categories and returns generated series.
+    If 'persist' is true, writes facts in the V2 contract:
+    (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value)
+    """
     sc = _fetch_scenario(db, scenario_id)
     months = sc["months"]
     months_axis = _ym_series(sc["start_date"], months)
@@ -546,8 +538,7 @@ def run_engine(
     locks = EngineLocks(rise_and_fall=_has_rise_fall_policy(db, scenario_id, [e.value for e in enabled_codes]))
 
     # TWC (DSO)
-    twc = db.execute(text("""
-        SELECT dso_days FROM scenario_twc WHERE scenario_id = :sid LIMIT 1
+    twc = db.execute(text("""            SELECT dso_days FROM scenario_twc WHERE scenario_id = :sid LIMIT 1
     """), {"sid": scenario_id}).mappings().first()
     dso_days = int(twc["dso_days"]) if twc and twc["dso_days"] is not None else 0
 

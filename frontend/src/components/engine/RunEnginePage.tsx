@@ -1,4 +1,4 @@
-// frontend/src/components/engine/RunEnginePage.tsx
+// Path: frontend/src/components/engine/RunEnginePage.tsx
 import React, { useEffect, useMemo, useState, type ReactNode } from "react";
 import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage } from "../../api/engine";
 
@@ -127,23 +127,11 @@ function normalizeRows(rows: any[]): FactRow[] {
   return rows.map((r) => {
     const ym = String(r.yyyymm ?? "");
     const y = ym.slice(0, 4), m = ym.slice(4, 6);
-    const sheet = String(r.sheet_code ?? "");
-    const sRaw = String(r.series ?? "").toLowerCase();
-    let sNorm: SeriesKey;
-    if (sRaw === "revenue" || sRaw === "cogs" || sRaw === "gp") {
-      sNorm = sRaw as SeriesKey;
-    } else {
-      const sc = sheet.toLowerCase();
-      if (sc.includes(".cogs")) sNorm = "cogs";
-      else if (sc.includes(".gp")) sNorm = "gp";
-      else sNorm = "revenue";
-    }
-    const val = Number(r.value ?? 0);
     return {
       yyyymm: ym && ym.length === 6 ? `${y}-${m}` : (r.yyyymm ?? ""),
-      series: sNorm,
-      value: Number.isFinite(val) ? val : 0,
-      sheet_code: sheet,
+      series: String(r.series ?? "").toLowerCase() as SeriesKey,
+      value: Number(r.value ?? 0),
+      sheet_code: String(r.sheet_code ?? ""),
       category_code: r.category_code ?? null,
     };
   });

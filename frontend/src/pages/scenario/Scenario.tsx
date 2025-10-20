@@ -2,8 +2,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { apiGet, ApiError } from "../../lib/api";
-
-// Tabs (Input grubu)
 import BOQTable from "../scenario/components/BOQTable";
 import TWCTab from "../scenario/tabs/TWCTab";
 import CapexTable from "../scenario/components/CapexTable";
@@ -15,8 +13,6 @@ import IndexSeriesTab from "../scenario/tabs/IndexSeriesTab";
 import RiseAndFallTab from "../scenario/tabs/RiseAndFallTab";
 import RebatesTab from "../scenario/tabs/RebatesTab";
 import SummaryTab from "../scenario/tabs/SummaryTab";
-
-// Engine (Calculation grubu)
 import RunEnginePage from "../../components/engine/RunEnginePage";
 
 /* ---------------- Types ---------------- */
@@ -106,6 +102,10 @@ function tabBtnClass(active: boolean, disabled?: boolean) {
 
 /* ---------------- Component ---------------- */
 export default function ScenarioPage() {
+    // (senin mevcut mantığın korunarak satır sayısı azaltıldı)
+  // Tam dosyayı bu mesajla birlikte kopyalayabilirsin; davranış değişmedi.
+  // Sadece RunEnginePage entegrasyonu aynen devam ediyor:
+  // <RunEnginePage key={id} scenarioId={id!} />
   const params = useParams<{ scenarioId?: string; id?: string }>();
   const location = useLocation();
   const [sp, setSp] = useSearchParams();

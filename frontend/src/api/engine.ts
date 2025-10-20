@@ -1,58 +1,7 @@
-// frontend/src/api/engine.ts
-// Uses VITE_API_BASE (e.g. http://127.0.0.1:8000/api) or falls back to "/api".
-// Automatically adds "/api" if env var only provides the host.
+// Path: frontend/src/api/engine.ts
+// Single-point Engine API (uses central api.ts for base URL & credentials)
 
-import { getToken } from "../lib/auth";
-
-function normalizeBase(): string {
-  let base = (import.meta as any).env?.VITE_API_BASE || "/api";
-  if (!base.endsWith("/api")) {
-    if (base.endsWith("/")) base = base.slice(0, -1);
-    base = base + "/api";
-  }
-  return base;
-}
-
-const BASE = normalizeBase();
-
-async function request<T = any>(path: string, init: RequestInit = {}): Promise<T> {
-  const url = `${BASE}${path.startsWith("/") ? "" : "/"}${path}`;
-
-  // headers + auth
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-    ...(init.headers as any),
-  };
-  const token = getToken?.();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (init.body && typeof init.body === "string" && !headers["Content-Type"]) {
-    headers["Content-Type"] = "application/json";
-  }
-
-  const res = await fetch(url, { ...init, headers });
-
-  if (res.status === 204) return null as T;
-
-  const contentType = res.headers.get("content-type") || "";
-  const text = await res.text();
-
-  if (!contentType.includes("application/json")) {
-    throw new Error(`API ${res.status}: Response is not JSON: ${text.slice(0, 160)}…`);
-  }
-
-  let json: any = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    throw new Error(`API ${res.status}: Invalid JSON.`);
-  }
-
-  if (!res.ok) {
-    const msg = (json && (json.detail || json.message || json.error)) || text.slice(0, 200);
-    throw new Error(`API ${res.status}: ${msg}`);
-  }
-  return json as T;
-}
+import { apiGet, apiPost, ApiError } from "../lib/api";
 
 export const DEFAULT_OPTIONS = {
   rise_and_fall: true,
@@ -67,18 +16,32 @@ export function format1(v: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(v);
 }
 
+/** Resilient engine run.
+ * Tries canonical route first: POST /api/scenarios/{id}/run-engine
+ * Falls back to:          POST /api/engine/run?scenario_id={id}
+ * so FE works regardless of router prefix differences.
+ */
 export async function runEngine(scenarioId: number, body: any) {
-  return request(`/scenarios/${scenarioId}/run-engine`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  try {
+    return await apiPost(`/scenarios/${scenarioId}/run-engine`, body);
+  } catch (e: any) {
+    const status = (e as ApiError)?.status ?? 0;
+    // 404/405 => try legacy endpoint
+    if (status === 404 || status === 405) {
+      const q = new URLSearchParams({ scenario_id: String(scenarioId) });
+      const legacyBody = { ...body, scenario_id: scenarioId };
+      return await apiPost(`/engine/run?${q.toString()}`, legacyBody);
+    }
+    throw e;
+  }
 }
 
 export async function checkBoqCoverage(scenarioId: number, section: "AN" | "EM" | "IE") {
-  return request(`/engine/coverage?scenario_id=${scenarioId}&section=${section}`);
+  const qs = new URLSearchParams({ scenario_id: String(scenarioId), section });
+  return apiGet(`/engine/coverage?${qs.toString()}`);
 }
 
-// Types used by Facts
+// -------- Facts --------
 export type EngineFactsRow = {
   run_id: number;
   scenario_id: number;
@@ -86,6 +49,7 @@ export type EngineFactsRow = {
   category_code: string;
   yyyymm: number;
   value: number;
+  series?: "revenue" | "cogs" | "gp";
 };
 
 export type EngineFactsResponse = {
@@ -99,8 +63,8 @@ export type EngineFactsResponse = {
 
 export type GetFactsArgs = {
   scenario_id: number;
-  sheet?: string;               // FE bu adla kullanıyor → URL’de sheet_code
-  category?: string;            // FE bu adla kullanıyor → URL’de category_code
+  sheet?: string;               // FE name → BE param: sheet_code
+  category?: string;            // FE name → BE param: category_code
   series?: string | string[];   // "revenue" | "cogs" | "gp"
   run_id?: number;
   latest?: boolean;
@@ -112,29 +76,34 @@ export type GetFactsArgs = {
   rollup?: "quarter" | "year";
 };
 
-export async function getEngineFacts(args: GetFactsArgs): Promise<EngineFactsResponse> {
+/** Backward-compat: also accepts { scenarioId } and maps to { scenario_id }. Normalizes 404 → empty rows. */
+export async function getEngineFacts(args: GetFactsArgs | (Partial<GetFactsArgs> & { scenarioId?: number })): Promise<EngineFactsResponse> {
+  const a: any = { ...args };
+  if (a.scenario_id == null && a.scenarioId != null) a.scenario_id = a.scenarioId;
+
   const params = new URLSearchParams();
-  params.set("scenario_id", String(args.scenario_id));
+  if (a.scenario_id == null) throw new Error("scenario_id is required");
+  params.set("scenario_id", String(a.scenario_id));
+  if (a.sheet) params.set("sheet_code", a.sheet);
+  if (a.category) params.set("category_code", a.category);
+  if (Array.isArray(a.series)) a.series.forEach((s: string) => params.append("series", s));
+  else if (a.series) params.set("series", a.series);
+  if (a.run_id != null) params.set("run_id", String(a.run_id));
+  if (a.latest) params.set("latest", "true");
+  if (a.yyyymm_from) params.set("yyyymm_from", String(a.yyyymm_from));
+  if (a.yyyymm_to) params.set("yyyymm_to", String(a.yyyymm_to));
+  if (a.limit) params.set("limit", String(a.limit));
+  if (a.offset) params.set("offset", String(a.offset));
+  if (a.group_by) params.set("group_by", a.group_by);
+  if (a.rollup) params.set("rollup", a.rollup);
 
-  // backend'in beklediği adlarla gönder
-  if (args.sheet) params.set("sheet_code", args.sheet);
-  if (args.category) params.set("category_code", args.category);
-
-  // series tekil/çoğul
-  if (Array.isArray(args.series)) {
-    for (const s of args.series) params.append("series", s);
-  } else if (args.series) {
-    params.set("series", args.series);
+  try {
+    return await apiGet<EngineFactsResponse>(`/engine/facts?${params.toString()}`);
+  } catch (e: any) {
+    const status = (e as ApiError)?.status ?? 0;
+    if (status === 404) {
+      return { scenario_id: Number(a.scenario_id || 0), count: 0, rows: [] };
+    }
+    throw e;
   }
-
-  if (args.run_id != null) params.set("run_id", String(args.run_id));
-  if (args.latest) params.set("latest", "true");
-  if (args.yyyymm_from) params.set("yyyymm_from", String(args.yyyymm_from));
-  if (args.yyyymm_to) params.set("yyyymm_to", String(args.yyyymm_to));
-  if (args.limit) params.set("limit", String(args.limit));
-  if (args.offset) params.set("offset", String(args.offset));
-  if (args.group_by) params.set("group_by", args.group_by);
-  if (args.rollup) params.set("rollup", args.rollup);
-
-  return request<EngineFactsResponse>(`/engine/facts?${params.toString()}`);
 }
