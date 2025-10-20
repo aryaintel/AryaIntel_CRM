@@ -1,3 +1,4 @@
+// relative path: frontend/src/api/engine.ts
 // Path: frontend/src/api/engine.ts
 // Single-point Engine API (uses central api.ts for base URL & credentials)
 
@@ -36,9 +37,12 @@ export async function runEngine(scenarioId: number, body: any) {
   }
 }
 
-export async function checkBoqCoverage(scenarioId: number, section: "AN" | "EM" | "IE") {
-  const qs = new URLSearchParams({ scenario_id: String(scenarioId), section });
-  return apiGet(`/engine/coverage?${qs.toString()}`);
+export async function checkBoqCoverage(
+  scenarioId: number,
+  section: "AN" | "EM" | "IE"
+) {
+  const qs = new URLSearchParams({ section });
+  return apiGet(`/scenarios/${scenarioId}/boq/check-coverage?${qs.toString()}`);
 }
 
 // -------- Facts --------

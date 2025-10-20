@@ -1,6 +1,7 @@
+// relative path: frontend/src/components/engine/RunEnginePage.tsx
 // Path: frontend/src/components/engine/RunEnginePage.tsx
 import React, { useEffect, useMemo, useState, type ReactNode } from "react";
-import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage } from "../../api/engine";
+import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage, getEngineFacts } from "../../api/engine";
 
 /**
  * Run Engine — All-in-One (Single File)
@@ -10,15 +11,13 @@ import { runEngine, DEFAULT_OPTIONS, checkBoqCoverage } from "../../api/engine";
  * • Alt   : Persisted Facts (oA.Finance-*) — series pivot
  *
  * NOT — Kritik düzeltmeler:
- * 1) series paramı: yalnızca TEK seri seçiliyken gönderilir. Çoklu seçimde server'a gönderilmez,
- *    ya da 'series_str' ile "," ayrılmış olarak gönderilir (backend destekli). (bkz. fetchFacts)
- * 2) facts yanıtı: { rows: [...] } yapısından okunur; dizi dönerse de desteklenir.
- * 3) sheet filtreleme: server'a sheet gönderME, client-side prefix eşleme + fallback uygula.
- *    Böylece DB'de oA.* dursa bile Monthly görünüm boş kalmaz.
+ * 1) facts çağrısında server’a seri filtresi göndermiyoruz; tüm serileri çekip client’ta filtreliyoruz.
+ * 2) facts yanıtı hem { rows:[...] } hem de doğrudan [] ise desteklenir.
+ * 3) sheet filtreleme client-side prefix eşleme ile yapılır (SHEET_BY_MODE).
  */
 
 // ==== Türler & Yardımcılar ===================================================
-const CATS = ["AN", "EM", "IE", "Services"] as const; // HMR: export yok
+const CATS = ["AN", "EM", "IE", "Services"] as const;
 type EngineCategoryCode = typeof CATS[number];
 
 type EngineCategory = { code: EngineCategoryCode; enabled: boolean };
@@ -122,20 +121,34 @@ function fmt(n?: number) {
   catch { return String(n); }
 }
 
-// ---------- Yardımcılar ----------
-function normalizeRows(rows: any[]): FactRow[] {
-  return rows.map((r) => {
-    const ym = String(r.yyyymm ?? "");
-    const y = ym.slice(0, 4), m = ym.slice(4, 6);
-    return {
-      yyyymm: ym && ym.length === 6 ? `${y}-${m}` : (r.yyyymm ?? ""),
-      series: String(r.series ?? "").toLowerCase() as SeriesKey,
-      value: Number(r.value ?? 0),
-      sheet_code: String(r.sheet_code ?? ""),
-      category_code: r.category_code ?? null,
-    };
-  });
+// ---------- Seri & satır normalizasyonu ----------
+function normalizeSeries(s: string): SeriesKey | null {
+  const x = (s || "").toLowerCase();
+  if (x === "revenue" || x === "sales" || x === "sales_revenue" || x === "revenue_total" || x === "sales_total") return "revenue";
+  if (x === "cogs" || x === "cogs_ex_tax" || x === "cost" || x === "costs" || x === "cogs_total") return "cogs";
+  if (x === "gp" || x === "gross_profit" || x === "gp_ex_tax" || x === "profit" || x === "gross") return "gp";
+  return null;
 }
+
+function normalizeRows(rows: any[]): FactRow[] {
+  const out: FactRow[] = [];
+  for (const r of rows) {
+    const ymRaw = String(r.yyyymm ?? r.month_key ?? r.period ?? "");
+    const ymDigits = ymRaw.replace(/[^0-9]/g, "");
+    const ym = ymDigits.length >= 6 ? `${ymDigits.slice(0,4)}-${ymDigits.slice(4,6)}` : (ymRaw || "");
+    const key = normalizeSeries(String(r.series ?? r.metric ?? ""));
+    if (!key) continue; // bilinmeyen seri -> atla
+    out.push({
+      yyyymm: ym,
+      series: key,
+      value: Number(r.value ?? r.amount ?? 0),
+      sheet_code: String(r.sheet_code ?? r.sheet ?? ""),
+      category_code: r.category_code ?? r.category ?? null,
+    });
+  }
+  return out;
+}
+
 function pickRowsBySheet(all: FactRow[], desired: string): FactRow[] {
   // 1) Tam eşleşme veya prefix (desired.*)
   let out = all.filter(r => r.sheet_code === desired || r.sheet_code?.startsWith(desired + "."));
@@ -215,26 +228,23 @@ export default function RunEnginePage({
   // ---------- Pivot veri (API: /api/engine/facts + category) ----------
   async function fetchFacts(opts: {
     scenarioId: number;
-    sheet: string;                 // istenen sheet prefix (örn. c.Sales-AN)
+    sheet: string;
     series: ("revenue" | "cogs" | "gp")[];
     category: "AN" | "Services";
   }) {
-    const qs = new URLSearchParams();
-    qs.set("scenario_id", String(opts.scenarioId));
-    qs.set("category_code", opts.category); qs.set("category", opts.category);
-    qs.set("latest", "true");
-
-    if (opts.series.length === 1) {
-      qs.set("series", opts.series[0] as string);
-    } else if (opts.series.length > 1) {
-      // Backend 'series_str' virgüllü stringi destekliyor; 'series' paramını göndermiyoruz.
-      qs.set("series_str", opts.series.join(","));
-    }
-    const res = await fetch(`/api/engine/facts?${qs.toString()}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const payload = await res.json();
-    const rows = Array.isArray(payload) ? payload : (payload?.rows || []);
-    const all = normalizeRows(rows);
+     const payload = await getEngineFacts({
+      scenario_id: opts.scenarioId,
+      sheet: opts.sheet,
+      category: opts.category,
+      series: opts.series,
+      latest: true,
+    });
+    const rowsRaw = Array.isArray((payload as any)?.rows)
+      ? (payload as any).rows
+      : Array.isArray(payload as any)
+        ? (payload as any)
+        : [];
+    const all = normalizeRows(rowsRaw as any[]);
     return pickRowsBySheet(all, opts.sheet);
   }
 
@@ -265,7 +275,7 @@ export default function RunEnginePage({
       }
     })();
     return () => { mounted = false; };
-  }, [scenarioId, mode, seriesSel]);
+  }, [scenarioId, mode, seriesSel, result?.run_id]);
 
   // ---------- Persisted Facts (oA.Finance-*) ----------
   const [persisted, setPersisted] = useState<Record<string, FactRow[]>>({});
@@ -294,7 +304,7 @@ export default function RunEnginePage({
       }
     })();
     return () => { mounted = false; };
-  }, [scenarioId]);
+  }, [scenarioId, result?.run_id]);
 
   // ---------- Ortak grid üretimi ----------
   function buildHeaders(rows: FactRow[]) {
@@ -316,7 +326,7 @@ export default function RunEnginePage({
   return (
     <div className={className ?? ""}>
 
-      {/* ÜST KONTROLLER — sticky (tablolar aşağıda kalır) */}
+      {/* ÜST KONTROLLER — sticky */}
       <div className="sticky top-0 z-10 bg-gray-50/80 backdrop-blur border-b">
         <Box title="Run Engine">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

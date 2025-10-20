@@ -1,4 +1,4 @@
-// Pathway: C:/Dev/AryaIntel_CRM/frontend/src/lib/api.ts
+// Pathway: frontend/src/lib/api.ts
 import { getToken } from "./auth";
 
 /** ---------- Config ---------- */
@@ -12,9 +12,13 @@ function joinUrl(path: string) {
   // absolute URL ise dokunma
   if (/^https?:\/\//i.test(path)) return path;
 
-  // "/api/..." veya "/..." ya da "relative" tüm durumları API_BASE'e bağla
-  const p = path.startsWith("/") ? path : `/${path}`;
-  return `${API_BASE}${p}`;
+  // normalize: hem API_BASE hem path "/api" ile başlıyorsa tekrar etmesin
+  const base = API_BASE.replace(/\/+$/, "");
+  const fullPath = path.startsWith("/") ? path : `/${path}`;
+  const joined = `${base}${fullPath}`;
+
+  // çift /api/api/ varsa düzelt
+  return joined.replace(/\/api\/api\//g, "/api/");
 }
 
 export class ApiError extends Error {
@@ -113,12 +117,10 @@ async function request<T>(
         ? (body as any)
         : JSON.stringify(body),
     signal: controller.signal,
-    // ÇOK ÖNEMLİ: Cookie tabanlı oturumlar için çerezi gönder
     credentials: "include",
   };
 
   if (DEBUG) {
-    // eslint-disable-next-line no-console
     console.debug(`[API] ${method} ${url}`, { headers, body: isFormData ? "[FormData]" : body });
   }
 
@@ -136,7 +138,6 @@ async function request<T>(
         : "";
     throw new ApiError(0, (err?.message || "Network request failed") + hint, err, method, url);
   } finally {
-    // fetch tamamlanınca/abort olunca mutlaka temizle
     clearTimeout(timer);
   }
 
@@ -144,13 +145,10 @@ async function request<T>(
     const { message, payload } = await readPayload(res);
     const decorated = `[${res.status}] ${method} ${url} → ${message}`;
 
-    // Global 401 bildirimi (opsiyonel olarak route değiştirilebilir)
     if (res.status === 401 && typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("auth:unauthorized", { detail: { method, url, message, payload } })
       );
-      // Örn: otomatik logout ya da login'e atmak istersen:
-      // window.location.assign("/login");
     }
 
     throw new ApiError(res.status, decorated, payload, method, url);
@@ -164,13 +162,11 @@ async function request<T>(
   if (ct.includes("application/json")) {
     const data = (await res.json()) as T;
     if (DEBUG) {
-      // eslint-disable-next-line no-console
       console.debug(`[API] ${method} ${url} ← OK`, data);
     }
     return data;
   }
 
-  // Başka content-type ise, çağıran taraf belirlesin (şimdilik undefined)
   return undefined as unknown as T;
 }
 
@@ -187,7 +183,6 @@ export function apiPut<T>(path: string, body?: unknown, token?: string | null, t
 export function apiPatch<T>(path: string, body?: unknown, token?: string | null, timeoutMs?: number) {
   return request<T>("PATCH", path, body, token, timeoutMs);
 }
-/** GENERIC DELETE */
 export function apiDelete<T = void>(path: string, token?: string | null, timeoutMs?: number) {
   return request<T>("DELETE", path, undefined, token, timeoutMs);
 }

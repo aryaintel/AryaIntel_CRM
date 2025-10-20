@@ -1,3 +1,4 @@
+// relative path: frontend/src/pages/scenario/Scenario.tsx
 // Path: frontend/src/pages/scenario/Scenario.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
@@ -102,10 +103,6 @@ function tabBtnClass(active: boolean, disabled?: boolean) {
 
 /* ---------------- Component ---------------- */
 export default function ScenarioPage() {
-    // (senin mevcut mantığın korunarak satır sayısı azaltıldı)
-  // Tam dosyayı bu mesajla birlikte kopyalayabilirsin; davranış değişmedi.
-  // Sadece RunEnginePage entegrasyonu aynen devam ediyor:
-  // <RunEnginePage key={id} scenarioId={id!} />
   const params = useParams<{ scenarioId?: string; id?: string }>();
   const location = useLocation();
   const [sp, setSp] = useSearchParams();
@@ -209,7 +206,8 @@ export default function ScenarioPage() {
           (e instanceof ApiError && e.message) ||
           e?.payload?.detail ||
           "Unauthorized. Please login.";
-        throw new ApiError(401, String(msg));
+        // ApiError ctor imzasına bağlı kalmamak için düz Error fırlat
+        throw new Error(String(msg));
       });
       const sc = await apiGet<ScenarioDetail>(`/business-cases/scenarios/${id}`);
       setData(sc);
@@ -488,7 +486,7 @@ export default function ScenarioPage() {
       {/* Engine panel: SADECE Calculation grubunda */}
       {mainGroup === "calculation" && id ? (
         <div className="rounded border p-4 bg-white">
-        <RunEnginePage key={id} scenarioId={id!} />
+          <RunEnginePage key={id} scenarioId={id!} />
         </div>
       ) : null}
 
