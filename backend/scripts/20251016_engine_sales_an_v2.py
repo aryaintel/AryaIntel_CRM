@@ -1,3 +1,4 @@
+# Path: backend/scripts/20251016_engine_sales_an_v2.py
 #!/usr/bin/env python3
 # v2.1 — resilient product_family fallback (no crash if column is missing)
 from __future__ import annotations
@@ -128,47 +129,83 @@ def finish_run(conn: sqlite3.Connection, run_id: int):
     conn.execute("UPDATE engine_runs SET finished_at=datetime('now') WHERE id=?", (run_id,)); conn.commit()
 
 def compute(conn: sqlite3.Connection, scenario: Scenario, run_id: int):
-    SHEET='c.Sales-AN'; CAT='AN'
+    """Compute and persist c.Sales-AN with proper series (revenue/cogs/gp) per month."""
+    SHEET = 'c.Sales-AN'; CAT = 'AN'
     scen_start = date_to_yyyymm(scenario.start_date)
     cur = conn.cursor()
-    cur.execute("DELETE FROM engine_facts_monthly WHERE run_id=? AND sheet_code=? AND category_code=?",
-                (run_id,SHEET,CAT))
-    values: Dict[int,float] = {}
+    # Remove existing rows for this run & sheet/category (any series)
+    cur.execute(
+        "DELETE FROM engine_facts_monthly WHERE run_id=? AND sheet_code=? AND category_code=?",
+        (run_id, SHEET, CAT),
+    )
+
+    rev: Dict[int, float] = {}
+    cgs: Dict[int, float] = {}
+    gp : Dict[int, float] = {}
 
     rows = cur.execute("""
-        SELECT id, product_id, category, quantity, unit_price, frequency,
+        SELECT id, product_id, category, quantity, unit_price, unit_cogs, frequency,
                start_year, start_month, months
-        FROM scenario_boq_items
-        WHERE scenario_id=? AND is_active=1
-    """,(scenario.id,)).fetchall()
+          FROM scenario_boq_items
+         WHERE scenario_id=? AND is_active=1
+    """, (scenario.id,)).fetchall()
 
-    for (row_id, product_id, category, qty, unit_price, freq, sy, sm, mths) in rows:
+    for (row_id, product_id, category, qty, unit_price, unit_cogs, freq, sy, sm, mths) in rows:
         cat = detect_item_category(conn, product_id, category)
-        if cat != CAT: continue
-        if qty is None or unit_price is None: continue
+        if cat != CAT:
+            continue
+        if qty is None or unit_price is None:
+            continue
 
-        start_yyyymm = scen_start if (sy is None or sm is None) else (int(sy)*100+int(sm))
-        total_m = 1 if (mths is None or int(mths)<=0) else int(mths)
+        qty_f   = float(qty or 0.0)
+        price_f = float(unit_price or 0.0)
+        cost_f  = float(unit_cogs or 0.0)
+
+        start_yyyymm = scen_start if (sy is None or sm is None) else (int(sy)*100 + int(sm))
+        total_m = 1 if (mths is None or int(mths) <= 0) else int(mths)
         start_yyyymm, total_m = clamp_months(start_yyyymm, total_m, scen_start, scenario.months)
-        if total_m<=0: continue
-        f=(freq or "monthly").strip().lower()
-        if f not in ("monthly","annual"): f="monthly"
+        if total_m <= 0:
+            continue
 
-        if f=="monthly":
-            amount = float(qty)*float(unit_price)
+        f = (freq or "monthly").strip().lower()
+        if f not in ("monthly", "annual", "once"):
+            f = "monthly"
+
+        def add_one(ym: int, r: float, c: float):
+            rev[ym] = rev.get(ym, 0.0) + r
+            cgs[ym] = cgs.get(ym, 0.0) + c
+            gp[ym]  = gp.get(ym, 0.0) + (r - c)
+
+        if f == "monthly":
+            r = qty_f * price_f
+            c = qty_f * cost_f
             for i in range(total_m):
-                ym = yyyymm_add(start_yyyymm,i)
-                values[ym]=values.get(ym,0.0)+amount
-        else:
-            ym=start_yyyymm
-            values[ym]=values.get(ym,0.0)+float(qty)*float(unit_price)
+                ym = yyyymm_add(start_yyyymm, i)
+                add_one(ym, r, c)
+        else:  # annual/once → single month
+            ym = start_yyyymm
+            add_one(ym, qty_f * price_f, qty_f * cost_f)
 
-    for ym,val in sorted(values.items()):
-        cur.execute("""INSERT INTO engine_facts_monthly
-                       (run_id,scenario_id,sheet_code,category_code,yyyymm,value,created_at)
-                       VALUES(?,?,?,?,?,?,datetime('now'))""",
-                    (run_id,scenario.id,SHEET,CAT,ym,round(val,6)))
+    # Persist with series populated
+    def upsert_series(ym: int, series: str, val: float):
+        cur.execute(
+            """INSERT INTO engine_facts_monthly
+                   (run_id, scenario_id, sheet_code, category_code, yyyymm, series, value, created_at)
+                   VALUES(?,?,?,?,?,?,?,datetime('now'))
+                   ON CONFLICT(run_id, sheet_code, category_code, yyyymm, series)
+                   DO UPDATE SET value=excluded.value, scenario_id=excluded.scenario_id
+            """,
+            (run_id, scenario.id, SHEET, CAT, ym, series, round(float(val), 6)),
+        )
+
+    months = sorted(set(list(rev.keys()) + list(cgs.keys()) + list(gp.keys())))
+    for ym in months:
+        if ym in rev: upsert_series(ym, 'revenue', rev[ym])
+        if ym in cgs: upsert_series(ym, 'cogs',    cgs[ym])
+        if ym in gp:  upsert_series(ym, 'gp',      gp[ym])
+
     conn.commit()
+
 
 def main():
     ap=argparse.ArgumentParser()

@@ -567,6 +567,9 @@ def run_engine(
 
             # c.Sales (legacy index / görünüm)
             generated.append(SheetPayload(name=f"c.Sales-{code.value}", months=months_axis, values=R(rev_net)))
+            generated.append(SheetPayload(name=f"c.Sales-{code.value}.Revenue", months=months_axis, values=R(rev_net)))
+            generated.append(SheetPayload(name=f"c.Sales-{code.value}.COGS",    months=months_axis, values=R(cogs)))
+            generated.append(SheetPayload(name=f"c.Sales-{code.value}.GP",      months=months_axis, values=R(gp)))
 
             # oA – accrual facts split
             oa_prefix = f"oA.Finance-{code.value}"

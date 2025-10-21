@@ -1,4 +1,4 @@
-# backend/app/engine/persist.py
+# relative path: backend/app/engine/persist.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -195,6 +195,140 @@ def persist_records(
         )
         n += 1
     return n
+
+
+# -------------------------
+# Quarterly aggregation (oQ) — NEW
+# -------------------------
+
+def persist_quarterly_from_monthly(
+    cx: Connection,
+    *,
+    scenario_id: int,
+    run_id: int,
+    src_sheet_prefix: str = "c.Sales-",
+    dst_sheet_prefix: str = "oQ.Finance-",
+    categories: Optional[Sequence[str]] = None,
+) -> int:
+    """
+    Kaynak aylık fact'lerden (src_sheet_prefix) quarterly cash (oQ) üretir ve yazar.
+    - series: revenue, cogs, gp
+    - idempotent: aynı run_id/scenario_id + hedef prefix + kategori seti için önce siler, sonra yazar.
+    - çeyrek sonu yyyymm: 03/06/09/12
+
+    DÖNDÜRÜR: yazılan satır sayısı (insert + upsert toplamı).
+    """
+    # 1) Kategori seti yoksa kaynaktan keşfet
+    if not categories:
+        res = cx.execute(
+            text(
+                """
+                SELECT DISTINCT category_code
+                FROM engine_facts_monthly
+                WHERE scenario_id = :scenario_id
+                  AND run_id      = :run_id
+                  AND sheet_code  LIKE :src_like
+                """
+            ),
+            {"scenario_id": scenario_id, "run_id": run_id, "src_like": f"{src_sheet_prefix}%"},
+        )
+        categories = [row[0] for row in res.fetchall()]
+
+    if not categories:
+        return 0
+
+    # 2) Hedefi idempotent kılmak için mevcut kayıtları sil (yalnız ilgili kategoriler)
+    cx.execute(
+        text(
+            f"""
+            DELETE FROM engine_facts_monthly
+            WHERE scenario_id = :scenario_id
+              AND run_id      = :run_id
+              AND sheet_code  LIKE :dst_like
+              AND category_code IN ({",".join([":c"+str(i) for i in range(len(categories))])})
+            """
+        ),
+        {
+            "scenario_id": scenario_id,
+            "run_id": run_id,
+            "dst_like": f"{dst_sheet_prefix}%",
+            **{f"c{i}": cat for i, cat in enumerate(categories)},
+        },
+    )
+
+    # 3) Aylıkları quarter'a topla (SQL tarafında quarter sonu hesaplayarak)
+    res = cx.execute(
+        text(
+            f"""
+            SELECT
+              category_code,
+              /* quarter end yyyymm */
+              ((yyyymm / 100) * 100) +
+              CASE
+                WHEN (yyyymm % 100) BETWEEN 1 AND 3  THEN 3
+                WHEN (yyyymm % 100) BETWEEN 4 AND 6  THEN 6
+                WHEN (yyyymm % 100) BETWEEN 7 AND 9  THEN 9
+                ELSE 12
+              END AS q_end,
+              series,
+              SUM(value) AS sum_value
+            FROM engine_facts_monthly
+            WHERE scenario_id = :scenario_id
+              AND run_id      = :run_id
+              AND sheet_code  LIKE :src_like
+              AND series IN (:rev, :cogs, :gp)
+              AND category_code IN ({",".join([":k"+str(i) for i in range(len(categories))])})
+            GROUP BY category_code, q_end, series
+            ORDER BY category_code, q_end, series
+            """
+        ),
+        {
+            "scenario_id": scenario_id,
+            "run_id": run_id,
+            "src_like": f"{src_sheet_prefix}%",
+            "rev": Series.REVENUE,
+            "cogs": Series.COGS,
+            "gp": Series.GP,
+            **{f"k{i}": cat for i, cat in enumerate(categories)},
+        },
+    )
+
+    # 4) Yaz (upsert) — hedef sheet: "oQ.Finance-<CAT>"
+    written = 0
+    for category_code, q_end, series, sum_value in res.fetchall():
+        sheet_code = f"{dst_sheet_prefix}{category_code}"
+        upsert_fact(
+            cx,
+            scenario_id=scenario_id,
+            run_id=run_id,
+            sheet_code=sheet_code,
+            category_code=category_code,
+            yyyymm=str(int(q_end)),
+            series=series,
+            value=sum_value,
+        )
+        written += 1
+    return written
+
+
+def persist_quarterly_from_sales(
+    cx: Connection,
+    *,
+    scenario_id: int,
+    run_id: int,
+    categories: Optional[Sequence[str]] = None,
+) -> int:
+    """
+    Kısayol: c.Sales-* kaynaklı quarterly persist (oQ.Finance-*) üretir.
+    """
+    return persist_quarterly_from_monthly(
+        cx,
+        scenario_id=scenario_id,
+        run_id=run_id,
+        src_sheet_prefix="c.Sales-",
+        dst_sheet_prefix="oQ.Finance-",
+        categories=categories,
+    )
 
 
 # -------------------------

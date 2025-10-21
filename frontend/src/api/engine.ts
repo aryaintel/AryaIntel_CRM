@@ -1,10 +1,11 @@
+// Path: frontend/src/api/engine.ts
 // Pathway: frontend/src/api/engine.ts
 import { apiGet, apiPost } from "../lib/api";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                              */
 /* ------------------------------------------------------------------ */
-export type EngineSeries = "revenue" | "cogs" | "gp";
+export type EngineSeries = "revenue" | "cogs" | "gp" | "total_revenue";
 
 export type GetFactsOpts = {
   scenarioId: number;
@@ -37,7 +38,7 @@ type EngineFactsResponse = {
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
-const SERIES_ORDER: EngineSeries[] = ["revenue", "cogs", "gp"];
+const SERIES_ORDER: EngineSeries[] = ["revenue", "cogs", "gp", "total_revenue"];
 
 function normalizeSeries(input?: EngineSeries | EngineSeries[]): string | undefined {
   if (!input) return undefined;
