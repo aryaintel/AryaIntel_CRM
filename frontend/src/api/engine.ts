@@ -1,4 +1,4 @@
-// Path: frontend/src/api/engine.ts
+// relative path: frontend/src/api/engine.ts
 // Pathway: frontend/src/api/engine.ts
 import { apiGet, apiPost } from "../lib/api";
 
@@ -16,8 +16,18 @@ export type GetFactsOpts = {
   /** YYYYMM (örn. 202501) aralığı opsiyoneldir */
   yyyymmFrom?: string;
   yyyymmTo?: string;
-  /** true → persisted (oA/oQ), false/undefined → preview (c.Sales) */
+
+  /**
+   * Persisted/preview için geriye dönük uyumluluk: BE persisted flag'ini okumaz.
+   * Son run'a sabitlemek için runId veya latest kullanın.
+   */
   persisted?: boolean;
+
+  /** İmkan varsa spesifik run_id gönderin (persist dönüşünden) */
+  runId?: number;
+  /** runId yoksa son persist'i çekmek için latest=true kullanın */
+  latest?: boolean;
+
   /** sayfalama opsiyonel */
   page?: number;
   pageSize?: number;
@@ -70,7 +80,9 @@ export async function runEngine(scenarioId: number, body: Record<string, any> = 
 
 /**
  * Engine facts (preview veya persisted) çeker.
- * Kök neden düzeltmesi: `series` dizisi TEK parametre olarak gönderilir.
+ * Kök neden düzeltmesi:
+ *  - `series` dizisi TEK parametre (virgüllü) olarak gider.
+ *  - Persisted okuma için `run_id` veya `latest=true` gönderilir.
  */
 export async function getEngineFacts(opts: GetFactsOpts): Promise<EngineFactRow[]> {
   const {
@@ -79,12 +91,20 @@ export async function getEngineFacts(opts: GetFactsOpts): Promise<EngineFactRow[
     series,
     yyyymmFrom,
     yyyymmTo,
+    // persisted geriye dönük alan — BE bunu okumaz
     persisted,
+    // yeni parametreler:
+    runId,
+    latest,
     page,
     pageSize,
   } = opts;
 
   const seriesStr = normalizeSeries(series);
+
+  // En güncel persist'i hedefle: runId öncelikli, yoksa latest=true
+  const isPersistedSheet = sheet ? /^o[QA]\.Finance/.test(sheet) : false;
+  const wantLatest = latest ?? (isPersistedSheet || !!persisted);
 
   const query = toQuery({
     scenario_id: scenarioId,
@@ -92,7 +112,9 @@ export async function getEngineFacts(opts: GetFactsOpts): Promise<EngineFactRow[
     series: seriesStr, // <— TEK parametre, virgüllü
     yyyymm_from: yyyymmFrom,
     yyyymm_to: yyyymmTo,
-    persisted: persisted ? 1 : 0,
+    // persisted gönderilse de BE dikkate almıyor; bunun yerine:
+    run_id: runId,
+    latest: runId ? undefined : (wantLatest ? "true" : undefined),
     page,
     page_size: pageSize,
   });
