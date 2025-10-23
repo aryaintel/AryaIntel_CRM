@@ -5,16 +5,16 @@ import sqlite3, os
 
 router = APIRouter(prefix="/api/engine", tags=["engine"])
 
-# --- DB path resolution (PROJECT STANDARD FIRST) -----------------------------
-# Project standard: backend/app.db
-# Legacy fallback:  backend/app/app.db
+# --- DB path resolution (PROJECT STANDARD ONLY) ------------------------------
+# Project standard (single source of truth): backend/app.db
 def _db_path() -> str:
     here = os.path.dirname(os.path.abspath(__file__))          # .../backend/app/api
     app_dir = os.path.abspath(os.path.join(here, ".."))        # .../backend/app
-    # Prefer project standard
-    std = os.path.abspath(os.path.join(app_dir, "..", "app.db"))      # .../backend/app.db
-    legacy = os.path.abspath(os.path.join(app_dir, "app.db"))         # .../backend/app/app.db
-    return std if os.path.exists(std) else legacy
+    std = os.path.abspath(os.path.join(app_dir, "..", "app.db"))  # .../backend/app.db
+    # No fallback. Enforce single path to avoid writer/reader split.
+    if not os.path.exists(std):
+        raise HTTPException(status_code=500, detail=f"DB not found at {std}")
+    return std
 
 def _rows_to_dict(rows) -> List[Dict]:
     out: List[Dict] = []
@@ -87,10 +87,7 @@ def get_engine_facts(
     if category is None and category_code is not None:
         category = category_code
 
-    db_path = _db_path()
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=500, detail=f"DB not found at {db_path}")
-
+    db_path = _db_path()  # will raise 500 if not exists
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -156,8 +153,6 @@ def get_engine_facts(
 def facts_where_am_i(scenario_id: int = 1, run_id: Optional[int] = None):
     """Show which DB the READER uses and quick counts for latest and a given run."""
     db_path = _db_path()
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=500, detail=f"DB not found at {db_path}")
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -190,8 +185,6 @@ def facts_where_am_i(scenario_id: int = 1, run_id: Optional[int] = None):
 def facts_table_sanity(scenario_id: int = 1):
     """If both tables exist, show counts for the latest run in each (helps spot table mismatch)."""
     db_path = _db_path()
-    if not os.path.exists(db_path):
-        raise HTTPException(status_code=500, detail=f"DB not found at {db_path}")
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
